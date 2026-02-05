@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+:root {
+  /* Nado Dark Theme Colors */
+  --background: #0D0D0D;
+  --background-secondary: #141414;
+  --background-tertiary: #1A1A1A;
+  --foreground: #FFFFFF;
+  --foreground-secondary: #A1A1A1;
+  --foreground-muted: #6B6B6B;
+
+  /* Accent Colors */
+  --accent-green: #22C55E;
+  --accent-green-dim: rgba(34, 197, 94, 0.15);
+  --accent-red: #EF4444;
+  --accent-red-dim: rgba(239, 68, 68, 0.15);
+  --accent-mint: #4ADE80;
+
+  /* Border Colors */
+  --border-primary: #2A2A2A;
+  --border-secondary: #1F1F1F;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Monospace for numbers and addresses */
+.font-mono {
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+}
+
+/* Nado-style scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--background-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-primary);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--foreground-muted);
+}
+
+/* Custom bracket decoration class */
+.bracket-decoration {
+  position: relative;
+}
+
+.bracket-decoration::before {
+  content: '[';
+  margin-right: 8px;
+  color: var(--foreground-muted);
+}
+
+.bracket-decoration::after {
+  content: ']';
+  margin-left: 8px;
+  color: var(--foreground-muted);
+}
