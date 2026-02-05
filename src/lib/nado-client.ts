@@ -474,55 +474,253 @@ async function fetchAccountSnapshots(
   return result;
 }
 
-// Aggregate trader data from account snapshots
-function aggregateTraderDataFromSnapshots(
+// Fetch snapshots for multiple timestamps in a single pass
+// batch size = floor(40 / timestamps.length) to stay within API limit
+async function fetchAccountSnapshotsMultiTimestamp(
+  subaccounts: string[],
+  timestamps: number[],
+): Promise<Map<number, Map<string, AccountSnapshotProduct[]>>> {
+  const tsCount = timestamps.length;
+  const batchSize = Math.floor(40 / tsCount); // 13 for 3 timestamps
+  const concurrency = 5;
+  const batches: string[][] = [];
+
+  for (let i = 0; i < subaccounts.length; i += batchSize) {
+    batches.push(subaccounts.slice(i, i + batchSize));
+  }
+
+  console.log(`Fetching multi-ts snapshots: ${batches.length} batches of ${batchSize} × ${tsCount} timestamps, ${concurrency} concurrent`);
+  const startTime = Date.now();
+
+  // Initialize result maps per timestamp
+  const result = new Map<number, Map<string, AccountSnapshotProduct[]>>();
+  for (const ts of timestamps) {
+    result.set(ts, new Map());
+  }
+
+  for (let i = 0; i < batches.length; i += concurrency) {
+    const concurrentBatches = batches.slice(i, i + concurrency);
+
+    const batchResults = await Promise.all(
+      concurrentBatches.map(async (batch) => {
+        for (let attempt = 0; attempt <= 2; attempt++) {
+          try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000);
+
+            const response = await fetch(ARCHIVE_URL, {
+              method: 'POST',
+              headers: API_HEADERS,
+              body: JSON.stringify({
+                account_snapshots: { subaccounts: batch, timestamps },
+              }),
+              signal: controller.signal,
+            });
+
+            clearTimeout(timeoutId);
+            if (!response.ok) {
+              if (attempt < 2) {
+                await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+                continue;
+              }
+              return [];
+            }
+
+            const data = await response.json();
+            if (data.error) {
+              if (attempt < 2) {
+                await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+                continue;
+              }
+              return [];
+            }
+
+            // Parse: snapshots[subaccount][timestamp] = products[]
+            const entries: { subaccount: string; timestamp: number; products: AccountSnapshotProduct[] }[] = [];
+            const snapshots = data.snapshots || {};
+            for (const [subaccount, timestampData] of Object.entries(snapshots)) {
+              const tsData = timestampData as Record<string, unknown>;
+              for (const [tsStr, products] of Object.entries(tsData)) {
+                const ts = parseInt(tsStr);
+                if (Array.isArray(products)) {
+                  entries.push({ subaccount, timestamp: ts, products: products as AccountSnapshotProduct[] });
+                }
+              }
+            }
+            return entries;
+          } catch {
+            if (attempt < 2) {
+              await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+              continue;
+            }
+            return [];
+          }
+        }
+        return [];
+      })
+    );
+
+    for (const entries of batchResults) {
+      for (const { subaccount, timestamp, products } of entries) {
+        const tsMap = result.get(timestamp);
+        if (tsMap) {
+          tsMap.set(subaccount, products);
+        }
+      }
+    }
+
+    if (i + concurrency < batches.length) {
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    const processed = Math.min(i + concurrency, batches.length);
+    if (processed % 150 === 0) {
+      const firstTs = result.get(timestamps[0]);
+      console.log(`  Multi-ts snapshots: ${processed}/${batches.length} batches (${firstTs?.size || 0} subaccounts so far)`);
+    }
+  }
+
+  const elapsed = Date.now() - startTime;
+  const firstTs = result.get(timestamps[0]);
+  console.log(`Fetched multi-ts snapshots for ${firstTs?.size || 0} subaccounts in ${elapsed}ms`);
+  return result;
+}
+
+// Helper: extract per-subaccount cumulative volume from a snapshot map
+function extractCumulativeVolumes(
   snapshotsMap: Map<string, AccountSnapshotProduct[]>
+): Map<string, Map<number, number>> {
+  // Returns: subaccount → (product_id → cumulative_volume)
+  const result = new Map<string, Map<number, number>>();
+  for (const [subaccount, products] of snapshotsMap) {
+    const productMap = new Map<number, number>();
+    for (const product of products) {
+      if (!isPerpProduct(product.product_id)) continue;
+      const volume = Math.abs(fromX18(product.quote_volume_cumulative || '0'));
+      productMap.set(product.product_id, volume);
+    }
+    result.set(subaccount, productMap);
+  }
+  return result;
+}
+
+// Compute period volume = cumulative_now - cumulative_past
+// ONLY includes subaccounts present in BOTH snapshots to avoid
+// treating missing past data as "all volume is in this period"
+function computePeriodVolume(
+  nowVolumes: Map<string, Map<number, number>>,
+  pastVolumes: Map<string, Map<number, number>> | null
+): Map<string, Map<number, number>> {
+  const result = new Map<string, Map<number, number>>();
+  if (!pastVolumes) return result;
+
+  for (const [subaccount, nowProducts] of nowVolumes) {
+    const pastProducts = pastVolumes.get(subaccount);
+    // Skip subaccounts missing from past snapshot — we can't compute their period volume
+    if (!pastProducts) continue;
+
+    const periodProducts = new Map<number, number>();
+    for (const [productId, nowVol] of nowProducts) {
+      const pastVol = pastProducts.get(productId) || 0;
+      const diff = nowVol - pastVol;
+      if (diff > 0) {
+        periodProducts.set(productId, diff);
+      }
+    }
+    if (periodProducts.size > 0) {
+      result.set(subaccount, periodProducts);
+    }
+  }
+  return result;
+}
+
+// Aggregate trader data from multi-period snapshots
+function aggregateTraderDataMultiPeriod(
+  nowSnapshots: Map<string, AccountSnapshotProduct[]>,
+  snapshots24hAgo: Map<string, AccountSnapshotProduct[]> | null,
+  snapshots7dAgo: Map<string, AccountSnapshotProduct[]> | null,
 ): {
   traders: AggregatedTraderData[];
   productVolumes: Map<number, number>;
   totalVolume: number;
 } {
+  const nowVolumes = extractCumulativeVolumes(nowSnapshots);
+  const past24hVolumes = snapshots24hAgo ? extractCumulativeVolumes(snapshots24hAgo) : null;
+  const past7dVolumes = snapshots7dAgo ? extractCumulativeVolumes(snapshots7dAgo) : null;
+
+  // All-time = cumulative now
+  // 24h volume = now - 24h ago
+  // 7d volume = now - 7d ago
+  const volumes24h = computePeriodVolume(nowVolumes, past24hVolumes);
+  const volumes7d = computePeriodVolume(nowVolumes, past7dVolumes);
+
+  // Aggregate per wallet
   const traderMap = new Map<string, {
     address: string;
     totalVolume: number;
+    volume24h: number;
+    volume7d: number;
     products: Set<number>;
   }>();
 
   const productVolumes = new Map<number, number>();
   let totalVolume = 0;
+  let totalVolume24h = 0;
+  let totalVolume7d = 0;
 
-  for (const [subaccount, products] of snapshotsMap) {
+  // Process all-time volumes from nowVolumes
+  for (const [subaccount, productMap] of nowVolumes) {
     const address = extractWalletAddress(subaccount);
 
-    for (const product of products) {
-      if (!isPerpProduct(product.product_id)) continue;
+    if (!traderMap.has(address)) {
+      traderMap.set(address, { address, totalVolume: 0, volume24h: 0, volume7d: 0, products: new Set() });
+    }
+    const trader = traderMap.get(address)!;
 
-      const volume = Math.abs(fromX18(product.quote_volume_cumulative || '0'));
-      if (volume === 0) continue;
+    for (const [productId, vol] of productMap) {
+      if (vol === 0) continue;
+      trader.totalVolume += vol;
+      trader.products.add(productId);
+      totalVolume += vol;
 
-      totalVolume += volume;
-
-      if (!traderMap.has(address)) {
-        traderMap.set(address, {
-          address,
-          totalVolume: 0,
-          products: new Set(),
-        });
-      }
-
-      const trader = traderMap.get(address)!;
-      trader.totalVolume += volume;
-      trader.products.add(product.product_id);
-
-      const currentProductVol = productVolumes.get(product.product_id) || 0;
-      productVolumes.set(product.product_id, currentProductVol + volume);
+      const currentProductVol = productVolumes.get(productId) || 0;
+      productVolumes.set(productId, currentProductVol + vol);
     }
   }
 
+  // Add 24h volumes
+  for (const [subaccount, productMap] of volumes24h) {
+    const address = extractWalletAddress(subaccount);
+    const trader = traderMap.get(address);
+    if (!trader) continue;
+    for (const [, vol] of productMap) {
+      trader.volume24h += vol;
+      totalVolume24h += vol;
+    }
+  }
+
+  // Add 7d volumes
+  for (const [subaccount, productMap] of volumes7d) {
+    const address = extractWalletAddress(subaccount);
+    const trader = traderMap.get(address);
+    if (!trader) continue;
+    for (const [, vol] of productMap) {
+      trader.volume7d += vol;
+      totalVolume7d += vol;
+    }
+  }
+
+  // Build trader list with all fields
   const traders: AggregatedTraderData[] = Array.from(traderMap.values())
+    .filter(t => t.totalVolume > 0)
     .map((t) => ({
       address: t.address,
       totalVolumeUsd: t.totalVolume,
+      volume24h: t.volume24h,
+      volume7d: t.volume7d,
+      volumeShare: totalVolume > 0 ? (t.totalVolume / totalVolume) * 100 : 0,
+      volumeShare24h: totalVolume24h > 0 ? (t.volume24h / totalVolume24h) * 100 : 0,
+      volumeShare7d: totalVolume7d > 0 ? (t.volume7d / totalVolume7d) * 100 : 0,
       tradeCount: 0,
       buyVolumeUsd: t.totalVolume / 2,
       sellVolumeUsd: t.totalVolume / 2,
@@ -534,6 +732,21 @@ function aggregateTraderDataFromSnapshots(
     }))
     .sort((a, b) => b.totalVolumeUsd - a.totalVolumeUsd)
     .map((trader, index) => ({ ...trader, rank: index + 1 }));
+
+  // Compute 24h and 7d ranks
+  const sorted24h = [...traders].sort((a, b) => b.volume24h - a.volume24h);
+  sorted24h.forEach((t, i) => {
+    const orig = traders.find(tr => tr.address === t.address);
+    if (orig) orig.rank24h = t.volume24h > 0 ? i + 1 : undefined;
+  });
+
+  const sorted7d = [...traders].sort((a, b) => b.volume7d - a.volume7d);
+  sorted7d.forEach((t, i) => {
+    const orig = traders.find(tr => tr.address === t.address);
+    if (orig) orig.rank7d = t.volume7d > 0 ? i + 1 : undefined;
+  });
+
+  console.log(`Aggregated ${traders.length} traders: all-time=$${formatVolume(totalVolume)}, 7d=$${formatVolume(totalVolume7d)}, 24h=$${formatVolume(totalVolume24h)}`);
 
   return { traders, productVolumes, totalVolume };
 }
@@ -620,13 +833,30 @@ export async function fetchDashboardData(
     buildSubaccountIndex(subaccounts);
 
     const now = Math.floor(Date.now() / 1000);
+    const ts24hAgo = now - 24 * 60 * 60;
+    const ts7dAgo = now - 7 * 24 * 60 * 60;
 
     const subaccountIds = subaccounts.map(s => s.subaccount);
-    const snapshots = await fetchAccountSnapshots(subaccountIds, now);
-    console.log(`Got snapshots for ${snapshots.size} subaccounts`);
+    const timestamps = [now, ts24hAgo, ts7dAgo];
 
-    const { traders, productVolumes, totalVolume } = aggregateTraderDataFromSnapshots(snapshots);
-    console.log(`Aggregated ${traders.length} traders with $${formatVolume(totalVolume)} total volume`);
+    // Fetch all 3 timestamps together so each batch has consistent data
+    // With 3 timestamps: batch size = floor(40/3) = 13 subaccounts per request
+    console.log('Fetching multi-timestamp snapshots (now, 24h ago, 7d ago)...');
+    const multiSnapshots = await fetchAccountSnapshotsMultiTimestamp(subaccountIds, timestamps);
+
+    const snapshotsNow = multiSnapshots.get(now) || new Map();
+    const snapshots24hAgo = multiSnapshots.get(ts24hAgo) || new Map();
+    const snapshots7dAgo = multiSnapshots.get(ts7dAgo) || new Map();
+
+    console.log(`Got snapshots: now=${snapshotsNow.size}, 24h-ago=${snapshots24hAgo.size}, 7d-ago=${snapshots7dAgo.size}`);
+
+    const { traders, productVolumes, totalVolume } = aggregateTraderDataMultiPeriod(
+      snapshotsNow, snapshots24hAgo, snapshots7dAgo
+    );
+
+    // Compute calculated period totals
+    const calculatedVolume24h = traders.reduce((sum, t) => sum + t.volume24h, 0);
+    const calculatedVolume7d = traders.reduce((sum, t) => sum + t.volume7d, 0);
 
     const formattedProductVolumes = formatProductVolumes(productVolumes);
 
@@ -655,6 +885,8 @@ export async function fetchDashboardData(
       totalVolume24h: volumeStats?.total24h || 0,
       totalVolume7d: volumeStats?.total7d || 0,
       totalVolumeAllTime: volumeStats?.totalAllTime || 0,
+      calculatedVolume24h,
+      calculatedVolume7d,
       totalTrades24h: 0,
       uniqueTraders24h: traders.length,
       volumeHistory,

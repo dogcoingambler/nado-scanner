@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { AggregatedTraderData, TimePeriod, WalletLookupResult } from '@/lib/types';
 import { truncateAddress, formatVolume } from '@/lib/nado-client';
 
@@ -10,8 +10,29 @@ interface TraderTableProps {
   period: TimePeriod;
 }
 
-type SortField = 'rank' | 'volume' | 'products';
+type SortField = 'rank' | 'volume' | 'share' | 'products';
 type SortDirection = 'asc' | 'desc';
+
+// Get volume for the selected period
+function getVolume(trader: AggregatedTraderData, period: TimePeriod): number {
+  if (period === '24h') return trader.volume24h ?? 0;
+  if (period === '7d') return trader.volume7d ?? 0;
+  return trader.totalVolumeUsd;
+}
+
+// Get volume share for the selected period
+function getShare(trader: AggregatedTraderData, period: TimePeriod): number {
+  if (period === '24h') return trader.volumeShare24h ?? 0;
+  if (period === '7d') return trader.volumeShare7d ?? 0;
+  return trader.volumeShare ?? 0;
+}
+
+// Get rank for the selected period
+function getRank(trader: AggregatedTraderData, period: TimePeriod): number | undefined {
+  if (period === '24h') return trader.rank24h;
+  if (period === '7d') return trader.rank7d;
+  return trader.rank;
+}
 
 export default function TraderTable({ traders, isLoading, period }: TraderTableProps) {
   const [sortField, setSortField] = useState<SortField>('rank');
@@ -26,6 +47,12 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
 
   const periodLabel = period === '24h' ? '24H' : period === '7d' ? '7D' : 'All-Time';
 
+  // Filter out traders with 0 volume for the selected period (for 24h/7d)
+  const activeTraders = useMemo(() => {
+    if (period === 'all') return traders;
+    return traders.filter(t => getVolume(t, period) > 0);
+  }, [traders, period]);
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
@@ -39,7 +66,6 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
     const query = searchQuery.trim();
     if (!query) return;
 
-    // Validate address format
     if (!/^0x[a-fA-F0-9]{40}$/.test(query)) {
       setSearchError('Invalid address format. Enter a full 0x address (42 characters).');
       setSearchResult(null);
@@ -64,7 +90,6 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
         if (match?.rank) {
           result.rank = match.rank;
         } else if (result.totalVolume > 0) {
-          // Calculate approximate rank by comparing against leaderboard
           const rank = traders.filter(t => t.totalVolumeUsd > result.totalVolume).length + 1;
           result.rank = rank;
         }
@@ -85,21 +110,26 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
     setSearchError(null);
   };
 
-  const sortedTraders = [...traders].sort((a, b) => {
-    let comparison = 0;
-    switch (sortField) {
-      case 'rank':
-        comparison = (a.rank || 0) - (b.rank || 0);
-        break;
-      case 'volume':
-        comparison = a.totalVolumeUsd - b.totalVolumeUsd;
-        break;
-      case 'products':
-        comparison = a.productCount - b.productCount;
-        break;
-    }
-    return sortDirection === 'asc' ? comparison : -comparison;
-  });
+  const sortedTraders = useMemo(() => {
+    return [...activeTraders].sort((a, b) => {
+      let comparison = 0;
+      switch (sortField) {
+        case 'rank':
+          comparison = (getRank(a, period) || 99999) - (getRank(b, period) || 99999);
+          break;
+        case 'volume':
+          comparison = getVolume(a, period) - getVolume(b, period);
+          break;
+        case 'share':
+          comparison = getShare(a, period) - getShare(b, period);
+          break;
+        case 'products':
+          comparison = a.productCount - b.productCount;
+          break;
+      }
+      return sortDirection === 'asc' ? comparison : -comparison;
+    });
+  }, [activeTraders, sortField, sortDirection, period]);
 
   const SortIcon = ({ field }: { field: SortField }) => {
     if (sortField !== field) return <span style={{ color: '#6B6B6B' }} className="ml-1">↕</span>;
@@ -142,7 +172,7 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
           <div>
             <h2 className="text-lg font-bold text-white">[ LEADERBOARD ]</h2>
             <p className="text-sm mt-1" style={{ color: '#6B6B6B' }}>
-              Top traders by {periodLabel} volume • {traders.length} traders
+              Top traders by {periodLabel} volume • {activeTraders.length} active traders
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -287,7 +317,6 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
                   )}
                 </div>
 
-                {/* Product breakdown */}
                 {searchResult.products.length > 0 && (
                   <div>
                     <div className="text-xs mb-2" style={{ color: '#6B6B6B' }}>Volume by Market</div>
@@ -335,7 +364,14 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
                 style={{ color: '#6B6B6B' }}
                 onClick={() => handleSort('volume')}
               >
-                VOLUME <SortIcon field="volume" />
+                {periodLabel} VOLUME <SortIcon field="volume" />
+              </th>
+              <th
+                className="text-right py-3 px-5 text-xs font-medium cursor-pointer hover:text-white transition-colors"
+                style={{ color: '#6B6B6B' }}
+                onClick={() => handleSort('share')}
+              >
+                % VOL <SortIcon field="share" />
               </th>
               <th
                 className="text-right py-3 px-5 text-xs font-medium cursor-pointer hover:text-white transition-colors"
@@ -348,7 +384,10 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
           </thead>
           <tbody>
             {sortedTraders.slice(0, showCount).map((trader) => {
-              const isTop3 = trader.rank && trader.rank <= 3;
+              const rank = getRank(trader, period);
+              const volume = getVolume(trader, period);
+              const share = getShare(trader, period);
+              const isTop3 = rank !== undefined && rank <= 3;
               const isSearched = searchResult?.found && trader.address.toLowerCase() === searchResult.address.toLowerCase();
 
               return (
@@ -364,18 +403,16 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
                 >
                   {/* Rank */}
                   <td className="py-4 px-5">
-                    <div className="flex items-center gap-3">
-                      <span
-                        className="font-mono font-bold text-sm"
-                        style={{
-                          color: trader.rank === 1 ? '#FFD700' :
-                                 trader.rank === 2 ? '#C0C0C0' :
-                                 trader.rank === 3 ? '#CD7F32' : '#6B6B6B'
-                        }}
-                      >
-                        #{trader.rank}
-                      </span>
-                    </div>
+                    <span
+                      className="font-mono font-bold text-sm"
+                      style={{
+                        color: rank === 1 ? '#FFD700' :
+                               rank === 2 ? '#C0C0C0' :
+                               rank === 3 ? '#CD7F32' : '#6B6B6B'
+                      }}
+                    >
+                      {rank ? `#${rank}` : '-'}
+                    </span>
                   </td>
 
                   {/* Trader Address */}
@@ -402,11 +439,15 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
 
                   {/* Volume */}
                   <td className="py-4 px-5 text-right">
-                    <span
-                      className="font-mono font-bold"
-                      style={{ color: '#22C55E' }}
-                    >
-                      {formatVolume(trader.totalVolumeUsd)}
+                    <span className="font-mono font-bold" style={{ color: '#22C55E' }}>
+                      {formatVolume(volume)}
+                    </span>
+                  </td>
+
+                  {/* Volume Share */}
+                  <td className="py-4 px-5 text-right">
+                    <span className="font-mono text-sm" style={{ color: '#A1A1A1' }}>
+                      {share >= 0.01 ? `${share.toFixed(2)}%` : share > 0 ? '<0.01%' : '-'}
                     </span>
                   </td>
 
@@ -427,14 +468,14 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
       </div>
 
       {/* Footer */}
-      {traders.length > showCount && (
+      {activeTraders.length > showCount && (
         <div className="p-4 border-t text-center" style={{ borderColor: '#1F1F1F' }}>
           <button
-            onClick={() => setShowCount(Math.min(showCount + 50, traders.length))}
+            onClick={() => setShowCount(Math.min(showCount + 50, activeTraders.length))}
             className="px-4 py-2 text-sm font-medium rounded transition-all"
             style={{ background: '#1A1A1A', color: '#A1A1A1', border: '1px solid #2A2A2A' }}
           >
-            Load More ({Math.min(50, traders.length - showCount)} more)
+            Load More ({Math.min(50, activeTraders.length - showCount)} more)
           </button>
         </div>
       )}

@@ -61,6 +61,11 @@ export interface TraderStats {
 export interface AggregatedTraderData {
   address: string;
   totalVolumeUsd: number;
+  volume24h: number;
+  volume7d: number;
+  volumeShare: number;    // % of total all-time volume
+  volumeShare24h: number; // % of total 24h volume
+  volumeShare7d: number;  // % of total 7d volume
   tradeCount: number;
   buyVolumeUsd: number;
   sellVolumeUsd: number;
@@ -69,6 +74,8 @@ export interface AggregatedTraderData {
   productCount: number;
   totalFees: number;
   rank?: number;
+  rank24h?: number;
+  rank7d?: number;
 }
 
 export interface VolumeDataPoint {
@@ -90,13 +97,15 @@ export interface DashboardData {
   totalVolume24h: number;
   totalVolume7d?: number;
   totalVolumeAllTime?: number;
+  calculatedVolume24h?: number;  // Our calculated 24h total
+  calculatedVolume7d?: number;   // Our calculated 7d total
   totalTrades24h: number;
   uniqueTraders24h: number;
   volumeHistory: VolumeDataPoint[];
   productVolumes: ProductVolume[];
   lastUpdated: string;
   change1d?: number;
-  calculatedVolume?: number; // Volume calculated from fetched matches
+  calculatedVolume?: number; // Volume calculated from fetched matches (all-time)
 }
 
 export type TimePeriod = 'all' | '7d' | '24h';
