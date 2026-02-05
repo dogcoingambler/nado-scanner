@@ -8,6 +8,7 @@ interface TraderTableProps {
   traders: AggregatedTraderData[];
   isLoading: boolean;
   period: TimePeriod;
+  epochName?: string;
 }
 
 type SortField = 'rank' | 'volume' | 'share' | 'products';
@@ -16,25 +17,25 @@ type SortDirection = 'asc' | 'desc';
 // Get volume for the selected period
 function getVolume(trader: AggregatedTraderData, period: TimePeriod): number {
   if (period === '24h') return trader.volume24h ?? 0;
-  if (period === '7d') return trader.volume7d ?? 0;
+  if (period === 'epoch') return trader.volumeEpoch ?? 0;
   return trader.totalVolumeUsd;
 }
 
 // Get volume share for the selected period
 function getShare(trader: AggregatedTraderData, period: TimePeriod): number {
   if (period === '24h') return trader.volumeShare24h ?? 0;
-  if (period === '7d') return trader.volumeShare7d ?? 0;
+  if (period === 'epoch') return trader.volumeShareEpoch ?? 0;
   return trader.volumeShare ?? 0;
 }
 
 // Get rank for the selected period
 function getRank(trader: AggregatedTraderData, period: TimePeriod): number | undefined {
   if (period === '24h') return trader.rank24h;
-  if (period === '7d') return trader.rank7d;
+  if (period === 'epoch') return trader.rankEpoch;
   return trader.rank;
 }
 
-export default function TraderTable({ traders, isLoading, period }: TraderTableProps) {
+export default function TraderTable({ traders, isLoading, period, epochName }: TraderTableProps) {
   const [sortField, setSortField] = useState<SortField>('rank');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
   const [showCount, setShowCount] = useState(50);
@@ -45,9 +46,9 @@ export default function TraderTable({ traders, isLoading, period }: TraderTableP
   const [searchResult, setSearchResult] = useState<WalletLookupResult | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  const periodLabel = period === '24h' ? '24H' : period === '7d' ? '7D' : 'All-Time';
+  const periodLabel = period === '24h' ? '24H' : period === 'epoch' ? (epochName || 'Epoch') : 'All-Time';
 
-  // Filter out traders with 0 volume for the selected period (for 24h/7d)
+  // Filter out traders with 0 volume for the selected period (for 24h/epoch)
   const activeTraders = useMemo(() => {
     if (period === 'all') return traders;
     return traders.filter(t => getVolume(t, period) > 0);

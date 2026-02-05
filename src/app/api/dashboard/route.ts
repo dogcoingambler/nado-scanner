@@ -11,9 +11,9 @@ export async function GET(request: Request) {
     const period = (searchParams.get('period') || '24h') as TimePeriod;
 
     // Validate period
-    if (!['all', '7d', '24h'].includes(period)) {
+    if (!['all', 'epoch', '24h'].includes(period)) {
       return NextResponse.json(
-        { error: 'Invalid period. Use: all, 7d, or 24h' },
+        { error: 'Invalid period. Use: all, epoch, or 24h' },
         { status: 400 }
       );
     }

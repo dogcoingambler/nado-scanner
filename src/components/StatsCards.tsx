@@ -5,7 +5,7 @@ import type { TimePeriod } from '@/lib/types';
 
 interface StatsCardsProps {
   totalVolume24h: number;
-  totalVolume7d: number;
+  totalVolumeEpoch: number;
   totalVolumeAllTime: number;
   totalTrades: number;
   uniqueTraders: number;
@@ -13,28 +13,30 @@ interface StatsCardsProps {
   change1d: number;
   isLoading: boolean;
   selectedPeriod: TimePeriod;
+  epochName?: string;
 }
 
 export default function StatsCards({
   totalVolume24h,
-  totalVolume7d,
+  totalVolumeEpoch,
   totalVolumeAllTime,
   uniqueTraders,
   lastUpdated,
   change1d,
   isLoading,
   selectedPeriod,
+  epochName,
 }: StatsCardsProps) {
   const periodLabel = selectedPeriod === '24h'
     ? '24H'
-    : selectedPeriod === '7d'
-      ? '7D'
+    : selectedPeriod === 'epoch'
+      ? (epochName || 'Epoch')
       : 'All-Time';
 
   const currentVolume = selectedPeriod === '24h'
     ? totalVolume24h
-    : selectedPeriod === '7d'
-      ? totalVolume7d
+    : selectedPeriod === 'epoch'
+      ? totalVolumeEpoch
       : totalVolumeAllTime;
 
   if (isLoading) {

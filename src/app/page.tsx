@@ -40,9 +40,14 @@ export default function Home() {
     loadData();
   }, []);
 
+  // Build epoch label from data
+  const epochLabel = data?.currentEpoch
+    ? data.currentEpoch.name
+    : 'Epoch';
+
   const periods: { value: TimePeriod; label: string }[] = [
     { value: '24h', label: '24H' },
-    { value: '7d', label: '7D' },
+    { value: 'epoch', label: epochLabel },
     { value: 'all', label: 'ALL' },
   ];
 
@@ -139,7 +144,7 @@ export default function Home() {
         <section className="mb-8">
           <StatsCards
             totalVolume24h={data?.totalVolume24h || 0}
-            totalVolume7d={data?.totalVolume7d || 0}
+            totalVolumeEpoch={data?.calculatedVolumeEpoch || 0}
             totalVolumeAllTime={data?.totalVolumeAllTime || 0}
             totalTrades={data?.totalTrades24h || 0}
             uniqueTraders={data?.uniqueTraders24h || 0}
@@ -147,6 +152,7 @@ export default function Home() {
             change1d={data?.change1d || 0}
             isLoading={isLoading}
             selectedPeriod={selectedPeriod}
+            epochName={data?.currentEpoch?.name}
           />
         </section>
 
@@ -168,6 +174,7 @@ export default function Home() {
             traders={data?.traders || []}
             isLoading={isLoading}
             period={selectedPeriod}
+            epochName={data?.currentEpoch?.name}
           />
         </section>
       </main>

@@ -6,6 +6,7 @@ import type {
   VolumeDataPoint,
   ProductVolume,
   DashboardData,
+  Epoch,
 } from './types';
 
 // API endpoints (Production)
@@ -52,6 +53,40 @@ const PRODUCT_NAMES: Record<number, string> = {
 
 // Spot product IDs (not perps)
 const SPOT_PRODUCT_IDS = [0, 1, 3, 5];
+
+// ============================================================
+// NADO SEASON 1 EPOCH SCHEDULE
+// All times are UTC midnight boundaries
+// ============================================================
+const EPOCHS: Epoch[] = [
+  { name: 'Private Alpha',   start: '2025-11-21T00:00:00Z', end: '2026-01-16T00:00:00Z' },
+  { name: 'Off Season Wk 1', start: '2026-01-16T00:00:00Z', end: '2026-01-23T00:00:00Z' },
+  { name: 'Off Season Wk 2', start: '2026-01-23T00:00:00Z', end: '2026-01-31T00:00:00Z' },
+  { name: 'Season 1 Wk 1',   start: '2026-01-31T00:00:00Z', end: '2026-02-06T00:00:00Z' },
+  { name: 'Season 1 Wk 2',   start: '2026-02-06T00:00:00Z', end: '2026-02-13T00:00:00Z' },
+  { name: 'Season 1 Wk 3',   start: '2026-02-13T00:00:00Z', end: '2026-02-20T00:00:00Z' },
+  { name: 'Season 1 Wk 4',   start: '2026-02-20T00:00:00Z', end: '2026-02-27T00:00:00Z' },
+  { name: 'Season 1 Wk 5',   start: '2026-02-27T00:00:00Z', end: '2026-03-06T00:00:00Z' },
+  { name: 'Season 1 Wk 6',   start: '2026-03-06T00:00:00Z', end: '2026-03-13T00:00:00Z' },
+  { name: 'Season 1 Wk 7',   start: '2026-03-13T00:00:00Z', end: '2026-03-20T00:00:00Z' },
+  { name: 'Season 1 Wk 8',   start: '2026-03-20T00:00:00Z', end: '2026-03-27T00:00:00Z' },
+];
+
+// Find the current epoch based on the current time
+function getCurrentEpoch(): Epoch | null {
+  const now = new Date();
+  for (const epoch of EPOCHS) {
+    if (now >= new Date(epoch.start) && now < new Date(epoch.end)) {
+      return epoch;
+    }
+  }
+  // If past all defined epochs, return the last one
+  const last = EPOCHS[EPOCHS.length - 1];
+  if (now >= new Date(last.end)) return last;
+  return null;
+}
+
+export { EPOCHS, getCurrentEpoch };
 
 // Convert x18 format to number
 function fromX18(value: string): number {
@@ -638,7 +673,7 @@ function computePeriodVolume(
 function aggregateTraderDataMultiPeriod(
   nowSnapshots: Map<string, AccountSnapshotProduct[]>,
   snapshots24hAgo: Map<string, AccountSnapshotProduct[]> | null,
-  snapshots7dAgo: Map<string, AccountSnapshotProduct[]> | null,
+  snapshotsEpochStart: Map<string, AccountSnapshotProduct[]> | null,
 ): {
   traders: AggregatedTraderData[];
   productVolumes: Map<number, number>;
@@ -646,34 +681,34 @@ function aggregateTraderDataMultiPeriod(
 } {
   const nowVolumes = extractCumulativeVolumes(nowSnapshots);
   const past24hVolumes = snapshots24hAgo ? extractCumulativeVolumes(snapshots24hAgo) : null;
-  const past7dVolumes = snapshots7dAgo ? extractCumulativeVolumes(snapshots7dAgo) : null;
+  const epochStartVolumes = snapshotsEpochStart ? extractCumulativeVolumes(snapshotsEpochStart) : null;
 
   // All-time = cumulative now
   // 24h volume = now - 24h ago
-  // 7d volume = now - 7d ago
+  // Epoch volume = now - epoch start
   const volumes24h = computePeriodVolume(nowVolumes, past24hVolumes);
-  const volumes7d = computePeriodVolume(nowVolumes, past7dVolumes);
+  const volumesEpoch = computePeriodVolume(nowVolumes, epochStartVolumes);
 
   // Aggregate per wallet
   const traderMap = new Map<string, {
     address: string;
     totalVolume: number;
     volume24h: number;
-    volume7d: number;
+    volumeEpoch: number;
     products: Set<number>;
   }>();
 
   const productVolumes = new Map<number, number>();
   let totalVolume = 0;
   let totalVolume24h = 0;
-  let totalVolume7d = 0;
+  let totalVolumeEpoch = 0;
 
   // Process all-time volumes from nowVolumes
   for (const [subaccount, productMap] of nowVolumes) {
     const address = extractWalletAddress(subaccount);
 
     if (!traderMap.has(address)) {
-      traderMap.set(address, { address, totalVolume: 0, volume24h: 0, volume7d: 0, products: new Set() });
+      traderMap.set(address, { address, totalVolume: 0, volume24h: 0, volumeEpoch: 0, products: new Set() });
     }
     const trader = traderMap.get(address)!;
 
@@ -699,14 +734,14 @@ function aggregateTraderDataMultiPeriod(
     }
   }
 
-  // Add 7d volumes
-  for (const [subaccount, productMap] of volumes7d) {
+  // Add epoch volumes
+  for (const [subaccount, productMap] of volumesEpoch) {
     const address = extractWalletAddress(subaccount);
     const trader = traderMap.get(address);
     if (!trader) continue;
     for (const [, vol] of productMap) {
-      trader.volume7d += vol;
-      totalVolume7d += vol;
+      trader.volumeEpoch += vol;
+      totalVolumeEpoch += vol;
     }
   }
 
@@ -716,11 +751,11 @@ function aggregateTraderDataMultiPeriod(
     .map((t) => ({
       address: t.address,
       totalVolumeUsd: t.totalVolume,
+      volumeEpoch: t.volumeEpoch,
       volume24h: t.volume24h,
-      volume7d: t.volume7d,
       volumeShare: totalVolume > 0 ? (t.totalVolume / totalVolume) * 100 : 0,
+      volumeShareEpoch: totalVolumeEpoch > 0 ? (t.volumeEpoch / totalVolumeEpoch) * 100 : 0,
       volumeShare24h: totalVolume24h > 0 ? (t.volume24h / totalVolume24h) * 100 : 0,
-      volumeShare7d: totalVolume7d > 0 ? (t.volume7d / totalVolume7d) * 100 : 0,
       tradeCount: 0,
       buyVolumeUsd: t.totalVolume / 2,
       sellVolumeUsd: t.totalVolume / 2,
@@ -733,20 +768,20 @@ function aggregateTraderDataMultiPeriod(
     .sort((a, b) => b.totalVolumeUsd - a.totalVolumeUsd)
     .map((trader, index) => ({ ...trader, rank: index + 1 }));
 
-  // Compute 24h and 7d ranks
+  // Compute epoch and 24h ranks
+  const sortedEpoch = [...traders].sort((a, b) => b.volumeEpoch - a.volumeEpoch);
+  sortedEpoch.forEach((t, i) => {
+    const orig = traders.find(tr => tr.address === t.address);
+    if (orig) orig.rankEpoch = t.volumeEpoch > 0 ? i + 1 : undefined;
+  });
+
   const sorted24h = [...traders].sort((a, b) => b.volume24h - a.volume24h);
   sorted24h.forEach((t, i) => {
     const orig = traders.find(tr => tr.address === t.address);
     if (orig) orig.rank24h = t.volume24h > 0 ? i + 1 : undefined;
   });
 
-  const sorted7d = [...traders].sort((a, b) => b.volume7d - a.volume7d);
-  sorted7d.forEach((t, i) => {
-    const orig = traders.find(tr => tr.address === t.address);
-    if (orig) orig.rank7d = t.volume7d > 0 ? i + 1 : undefined;
-  });
-
-  console.log(`Aggregated ${traders.length} traders: all-time=$${formatVolume(totalVolume)}, 7d=$${formatVolume(totalVolume7d)}, 24h=$${formatVolume(totalVolume24h)}`);
+  console.log(`Aggregated ${traders.length} traders: all-time=$${formatVolume(totalVolume)}, epoch=$${formatVolume(totalVolumeEpoch)}, 24h=$${formatVolume(totalVolume24h)}`);
 
   return { traders, productVolumes, totalVolume };
 }
@@ -797,7 +832,7 @@ function buildSubaccountIndex(subaccounts: SubaccountInfo[]): void {
 
 // Main function to fetch dashboard data
 export async function fetchDashboardData(
-  period: 'all' | '7d' | '24h' = '24h'
+  period: 'all' | 'epoch' | '24h' = '24h'
 ): Promise<DashboardData> {
   // Check cache first
   const cached = dataCache.get(period);
@@ -834,40 +869,53 @@ export async function fetchDashboardData(
 
     const now = Math.floor(Date.now() / 1000);
     const ts24hAgo = now - 24 * 60 * 60;
-    const ts7dAgo = now - 7 * 24 * 60 * 60;
+
+    // Use current epoch start instead of rolling 7d
+    const currentEpoch = getCurrentEpoch();
+    const tsEpochStart = currentEpoch
+      ? Math.floor(new Date(currentEpoch.start).getTime() / 1000)
+      : now - 7 * 24 * 60 * 60; // fallback to 7d if no epoch found
+
+    console.log(`Current epoch: ${currentEpoch?.name || 'none'} (start: ${currentEpoch?.start || 'N/A'})`);
 
     const subaccountIds = subaccounts.map(s => s.subaccount);
-    const timestamps = [now, ts24hAgo, ts7dAgo];
+    const timestamps = [now, ts24hAgo, tsEpochStart];
 
     // Fetch all 3 timestamps together so each batch has consistent data
     // With 3 timestamps: batch size = floor(40/3) = 13 subaccounts per request
-    console.log('Fetching multi-timestamp snapshots (now, 24h ago, 7d ago)...');
+    console.log('Fetching multi-timestamp snapshots (now, 24h ago, epoch start)...');
     const multiSnapshots = await fetchAccountSnapshotsMultiTimestamp(subaccountIds, timestamps);
 
     const snapshotsNow = multiSnapshots.get(now) || new Map();
     const snapshots24hAgo = multiSnapshots.get(ts24hAgo) || new Map();
-    const snapshots7dAgo = multiSnapshots.get(ts7dAgo) || new Map();
+    const snapshotsEpochStart = multiSnapshots.get(tsEpochStart) || new Map();
 
-    console.log(`Got snapshots: now=${snapshotsNow.size}, 24h-ago=${snapshots24hAgo.size}, 7d-ago=${snapshots7dAgo.size}`);
+    console.log(`Got snapshots: now=${snapshotsNow.size}, 24h-ago=${snapshots24hAgo.size}, epoch-start=${snapshotsEpochStart.size}`);
 
     const { traders, productVolumes, totalVolume } = aggregateTraderDataMultiPeriod(
-      snapshotsNow, snapshots24hAgo, snapshots7dAgo
+      snapshotsNow, snapshots24hAgo, snapshotsEpochStart
     );
 
     // Compute calculated period totals
     const calculatedVolume24h = traders.reduce((sum, t) => sum + t.volume24h, 0);
-    const calculatedVolume7d = traders.reduce((sum, t) => sum + t.volume7d, 0);
+    const calculatedVolumeEpoch = traders.reduce((sum, t) => sum + t.volumeEpoch, 0);
 
     const formattedProductVolumes = formatProductVolumes(productVolumes);
 
     const volumeHistory: VolumeDataPoint[] = [];
     if (volumeStats?.totalDataChart) {
       const chartData = volumeStats.totalDataChart;
-      const dataToUse = period === '24h'
-        ? chartData.slice(-2)
-        : period === '7d'
-          ? chartData.slice(-7)
-          : chartData.slice(-30);
+      // For epoch, show chart data covering the epoch period
+      let dataToUse;
+      if (period === '24h') {
+        dataToUse = chartData.slice(-2);
+      } else if (period === 'epoch' && currentEpoch) {
+        const epochStartSec = Math.floor(new Date(currentEpoch.start).getTime() / 1000);
+        dataToUse = chartData.filter(([ts]) => ts >= epochStartSec);
+        if (dataToUse.length === 0) dataToUse = chartData.slice(-7);
+      } else {
+        dataToUse = chartData.slice(-30);
+      }
 
       for (const [timestamp, volume] of dataToUse) {
         const date = new Date(timestamp * 1000);
@@ -883,10 +931,9 @@ export async function fetchDashboardData(
     const result: DashboardData = {
       traders,
       totalVolume24h: volumeStats?.total24h || 0,
-      totalVolume7d: volumeStats?.total7d || 0,
       totalVolumeAllTime: volumeStats?.totalAllTime || 0,
       calculatedVolume24h,
-      calculatedVolume7d,
+      calculatedVolumeEpoch,
       totalTrades24h: 0,
       uniqueTraders24h: traders.length,
       volumeHistory,
@@ -894,6 +941,8 @@ export async function fetchDashboardData(
       lastUpdated: new Date().toISOString(),
       change1d: volumeStats?.change_1d || 0,
       calculatedVolume: totalVolume,
+      currentEpoch: currentEpoch || undefined,
+      epochs: EPOCHS,
     };
 
     dataCache.set(period, { data: result, timestamp: Date.now() });
