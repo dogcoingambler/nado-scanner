@@ -1,21 +1,21 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import StatsCards from '@/components/StatsCards';
-import TraderTable from '@/components/TraderTable';
-import VolumeChart from '@/components/VolumeChart';
-import ProductVolumes from '@/components/ProductVolumes';
-import type { DashboardData, TimePeriod } from '@/lib/types';
+import OverviewTab from '@/components/OverviewTab';
+import LeaderboardTab from '@/components/LeaderboardTab';
+import type { DashboardData } from '@/lib/types';
 
 interface StaticDashboardData extends DashboardData {
   generatedAt?: string;
 }
 
+type TabId = 'overview' | 'leaderboard';
+
 export default function Home() {
   const [data, setData] = useState<StaticDashboardData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState<TimePeriod>('all');
+  const [activeTab, setActiveTab] = useState<TabId>('overview');
 
   useEffect(() => {
     async function loadData() {
@@ -40,17 +40,6 @@ export default function Home() {
     loadData();
   }, []);
 
-  // Build epoch label from data
-  const epochLabel = data?.currentEpoch
-    ? data.currentEpoch.name
-    : 'Epoch';
-
-  const periods: { value: TimePeriod; label: string }[] = [
-    { value: '24h', label: '24H' },
-    { value: 'epoch', label: epochLabel },
-    { value: 'all', label: 'ALL' },
-  ];
-
   const generatedDate = data?.generatedAt
     ? new Date(data.generatedAt).toLocaleDateString('en-US', {
         month: 'short',
@@ -61,13 +50,18 @@ export default function Home() {
       })
     : null;
 
+  const tabs: { id: TabId; label: string }[] = [
+    { id: 'overview', label: 'Overview' },
+    { id: 'leaderboard', label: 'Leaderboard' },
+  ];
+
   return (
     <div className="min-h-screen" style={{ background: '#0D0D0D' }}>
-      {/* Header - Nado Style */}
+      {/* Header */}
       <header className="border-b" style={{ borderColor: '#1F1F1F', background: '#0D0D0D' }}>
         <div className="max-w-[1400px] mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
-            {/* Logo */}
+            {/* Logo + Tabs */}
             <div className="flex items-center gap-4">
               <a href="https://nado.xyz" target="_blank" rel="noopener noreferrer" className="flex items-center gap-2">
                 <svg width="28" height="28" viewBox="0 0 100 100" fill="none">
@@ -76,37 +70,33 @@ export default function Home() {
                 <span className="text-xl font-bold text-white tracking-tight">NADO</span>
               </a>
               <div className="h-6 w-px" style={{ background: '#2A2A2A' }}></div>
-              <span className="text-sm font-medium" style={{ color: '#A1A1A1' }}>Leaderboard</span>
-            </div>
 
-            {/* Right side controls */}
-            <div className="flex items-center gap-6">
-              {/* Period selector */}
-              <div className="flex items-center" style={{ background: '#141414', borderRadius: '6px' }}>
-                {periods.map((period) => (
+              {/* Tab Navigation */}
+              <nav className="flex items-center gap-1">
+                {tabs.map((tab) => (
                   <button
-                    key={period.value}
-                    onClick={() => setSelectedPeriod(period.value)}
-                    className="px-4 py-2 text-sm font-medium transition-all"
+                    key={tab.id}
+                    onClick={() => setActiveTab(tab.id)}
+                    className="px-4 py-2 text-sm font-medium transition-all rounded-md"
                     style={{
-                      color: selectedPeriod === period.value ? '#FFFFFF' : '#6B6B6B',
-                      background: selectedPeriod === period.value ? '#22C55E' : 'transparent',
-                      borderRadius: '6px',
+                      color: activeTab === tab.id ? '#FFFFFF' : '#6B6B6B',
+                      background: activeTab === tab.id ? '#1A1A1A' : 'transparent',
+                      borderBottom: activeTab === tab.id ? '2px solid #22C55E' : '2px solid transparent',
                     }}
                   >
-                    {period.label}
+                    {tab.label}
                   </button>
                 ))}
-              </div>
+              </nav>
+            </div>
 
-              {/* Data timestamp */}
+            {/* Right side */}
+            <div className="flex items-center gap-6">
               {generatedDate && (
-                <span className="text-xs font-mono" style={{ color: '#6B6B6B' }}>
+                <span className="text-xs font-mono hidden md:block" style={{ color: '#6B6B6B' }}>
                   Data as of {generatedDate}
                 </span>
               )}
-
-              {/* Trade link */}
               <a
                 href="https://app.nado.xyz"
                 target="_blank"
@@ -140,43 +130,11 @@ export default function Home() {
           </div>
         )}
 
-        {/* Stats Cards */}
-        <section className="mb-8">
-          <StatsCards
-            totalVolume24h={data?.totalVolume24h || 0}
-            totalVolumeEpoch={data?.calculatedVolumeEpoch || 0}
-            totalVolumeAllTime={data?.totalVolumeAllTime || 0}
-            totalTrades={data?.totalTrades24h || 0}
-            uniqueTraders={data?.uniqueTraders24h || 0}
-            lastUpdated={data?.lastUpdated || ''}
-            change1d={data?.change1d || 0}
-            isLoading={isLoading}
-            selectedPeriod={selectedPeriod}
-            epochName={data?.currentEpoch?.name}
-          />
-        </section>
-
-        {/* Charts Row */}
-        <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-          <VolumeChart
-            data={data?.volumeHistory || []}
-            isLoading={isLoading}
-          />
-          <ProductVolumes
-            data={data?.productVolumes || []}
-            isLoading={isLoading}
-          />
-        </section>
-
-        {/* Trader Leaderboard */}
-        <section>
-          <TraderTable
-            traders={data?.traders || []}
-            isLoading={isLoading}
-            period={selectedPeriod}
-            epochName={data?.currentEpoch?.name}
-          />
-        </section>
+        {activeTab === 'overview' ? (
+          <OverviewTab data={data} isLoading={isLoading} />
+        ) : (
+          <LeaderboardTab data={data} isLoading={isLoading} />
+        )}
       </main>
 
       {/* Footer */}

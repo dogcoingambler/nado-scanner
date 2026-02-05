@@ -7,6 +7,10 @@ import type {
   ProductVolume,
   DashboardData,
   Epoch,
+  UserGrowthPoint,
+  OpenInterestData,
+  EpochLeaderboard,
+  EpochTraderData,
 } from './types';
 
 // API endpoints (Production)
@@ -798,6 +802,170 @@ function formatProductVolumes(productVolumes: Map<number, number>): ProductVolum
 }
 
 // ============================================================
+// USER GROWTH — derive from subaccount created_at timestamps
+// ============================================================
+
+function computeUserGrowth(subaccounts: SubaccountInfo[]): UserGrowthPoint[] {
+  // Track unique wallets by first-seen date
+  const walletFirstSeen = new Map<string, string>(); // wallet → earliest created_at date
+  for (const sub of subaccounts) {
+    if (!sub.created_at || !sub.address) continue;
+    const addr = sub.address.toLowerCase();
+    const day = sub.created_at.slice(0, 10); // "2026-01-15"
+    const existing = walletFirstSeen.get(addr);
+    if (!existing || day < existing) {
+      walletFirstSeen.set(addr, day);
+    }
+  }
+
+  // Count new unique wallets per day
+  const dailyCounts = new Map<string, number>();
+  for (const [, day] of walletFirstSeen) {
+    dailyCounts.set(day, (dailyCounts.get(day) || 0) + 1);
+  }
+
+  // Sort by date, compute cumulative
+  const sorted = Array.from(dailyCounts.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  let cumulative = 0;
+  return sorted.map(([date, newUsers]) => {
+    cumulative += newUsers;
+    return { date, newUsers, cumulativeUsers: cumulative };
+  });
+}
+
+// Count new unique wallets in the last 24h
+function countNewUsers24h(subaccounts: SubaccountInfo[]): number {
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const recentWallets = new Set<string>();
+  for (const sub of subaccounts) {
+    if (!sub.created_at || !sub.address) continue;
+    const createdAt = new Date(sub.created_at);
+    if (createdAt >= oneDayAgo) {
+      recentWallets.add(sub.address.toLowerCase());
+    }
+  }
+  return recentWallets.size;
+}
+
+// ============================================================
+// OPEN INTEREST — fetch from Nado Gateway API
+// ============================================================
+
+async function fetchOpenInterest(): Promise<{ items: OpenInterestData[]; total: number }> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+    const response = await fetch(`${GATEWAY_URL}/query`, {
+      method: 'POST',
+      headers: API_HEADERS,
+      body: JSON.stringify({ type: 'all_products' }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+    if (!response.ok) return { items: [], total: 0 };
+
+    const data = await response.json();
+    if (data.status !== 'success') return { items: [], total: 0 };
+
+    const perpProducts = data.data?.perp_products || [];
+    let totalOi = 0;
+    const items: OpenInterestData[] = [];
+
+    for (const p of perpProducts) {
+      const productId = p.product_id;
+      const oiRaw = BigInt(p.state?.open_interest || '0');
+      const oracleRaw = BigInt(p.oracle_price_x18 || '0');
+      const oiContracts = Number(oiRaw) / 1e18;
+      const oraclePrice = Number(oracleRaw) / 1e18;
+      const oiUsd = oiContracts * oraclePrice;
+
+      if (oiUsd > 0) {
+        items.push({
+          productId,
+          name: getProductName(productId),
+          openInterestUsd: oiUsd,
+          openInterestContracts: oiContracts,
+          oraclePrice,
+        });
+        totalOi += oiUsd;
+      }
+    }
+
+    items.sort((a, b) => b.openInterestUsd - a.openInterestUsd);
+    console.log(`Open interest: ${items.length} products, total $${formatVolume(totalOi)}`);
+    return { items, total: totalOi };
+  } catch (error) {
+    console.error('Error fetching open interest:', error);
+    return { items: [], total: 0 };
+  }
+}
+
+// ============================================================
+// EPOCH LEADERBOARDS — compute leaderboard for a single epoch
+// ============================================================
+
+export async function fetchEpochLeaderboard(
+  epoch: Epoch,
+  subaccountIds: string[],
+): Promise<EpochLeaderboard> {
+  console.log(`\nComputing leaderboard for epoch: ${epoch.name} (${epoch.start} → ${epoch.end})`);
+  const startTs = Math.floor(new Date(epoch.start).getTime() / 1000);
+  const endTs = Math.floor(new Date(epoch.end).getTime() / 1000);
+
+  // 2 timestamps → batch size = 20
+  const multiSnapshots = await fetchAccountSnapshotsMultiTimestamp(subaccountIds, [startTs, endTs]);
+  const snapshotsStart = multiSnapshots.get(startTs) || new Map();
+  const snapshotsEnd = multiSnapshots.get(endTs) || new Map();
+
+  console.log(`  Epoch ${epoch.name}: start=${snapshotsStart.size}, end=${snapshotsEnd.size} subaccounts`);
+
+  const startVolumes = extractCumulativeVolumes(snapshotsStart);
+  const endVolumes = extractCumulativeVolumes(snapshotsEnd);
+  const periodVolumes = computePeriodVolume(endVolumes, startVolumes);
+
+  // Aggregate per wallet
+  const walletVolumes = new Map<string, { volume: number; products: Set<number> }>();
+  let totalVolume = 0;
+
+  for (const [subaccount, productMap] of periodVolumes) {
+    const address = extractWalletAddress(subaccount);
+    if (!walletVolumes.has(address)) {
+      walletVolumes.set(address, { volume: 0, products: new Set() });
+    }
+    const wallet = walletVolumes.get(address)!;
+    for (const [productId, vol] of productMap) {
+      wallet.volume += vol;
+      wallet.products.add(productId);
+      totalVolume += vol;
+    }
+  }
+
+  const traders: EpochTraderData[] = Array.from(walletVolumes.entries())
+    .filter(([, w]) => w.volume > 0)
+    .map(([address, w]) => ({
+      address,
+      volume: w.volume,
+      volumeShare: totalVolume > 0 ? (w.volume / totalVolume) * 100 : 0,
+      rank: 0,
+      productCount: w.products.size,
+    }))
+    .sort((a, b) => b.volume - a.volume)
+    .map((t, i) => ({ ...t, rank: i + 1 }));
+
+  console.log(`  Epoch ${epoch.name}: ${traders.length} traders, $${formatVolume(totalVolume)}`);
+
+  return {
+    epochName: epoch.name,
+    epochStart: epoch.start,
+    epochEnd: epoch.end,
+    totalVolume,
+    traders,
+  };
+}
+
+// ============================================================
 // CACHE + SUBACCOUNT INDEX
 // ============================================================
 
@@ -851,18 +1019,26 @@ export async function fetchDashboardData(
   isRefreshing = true;
 
   try {
-    // Fetch derivatives stats and all subaccounts concurrently
-    const [volumeStats, subaccounts] = await Promise.all([
+    // Fetch derivatives stats, subaccounts, and open interest concurrently
+    const [volumeStats, subaccounts, oiData] = await Promise.all([
       fetchDerivativesStats(),
       fetchAllSubaccounts(40000),
+      fetchOpenInterest(),
     ]);
 
     console.log('DefiLlama derivatives stats:', {
       total24h: volumeStats?.total24h,
       total7d: volumeStats?.total7d,
+      total30d: volumeStats?.total30d,
       totalAllTime: volumeStats?.totalAllTime,
     });
     console.log(`Processing ${subaccounts.length} subaccounts`);
+
+    // Compute user growth from subaccount creation timestamps
+    const userGrowth = computeUserGrowth(subaccounts);
+    const totalUsers = userGrowth.length > 0 ? userGrowth[userGrowth.length - 1].cumulativeUsers : 0;
+    const newUsers24h = countNewUsers24h(subaccounts);
+    console.log(`User growth: ${totalUsers} total users, ${newUsers24h} new in 24h, ${userGrowth.length} data points`);
 
     // Build subaccount index for fast wallet lookups
     buildSubaccountIndex(subaccounts);
@@ -902,22 +1078,10 @@ export async function fetchDashboardData(
 
     const formattedProductVolumes = formatProductVolumes(productVolumes);
 
+    // Always include full volume history (for overview tab charts)
     const volumeHistory: VolumeDataPoint[] = [];
     if (volumeStats?.totalDataChart) {
-      const chartData = volumeStats.totalDataChart;
-      // For epoch, show chart data covering the epoch period
-      let dataToUse;
-      if (period === '24h') {
-        dataToUse = chartData.slice(-2);
-      } else if (period === 'epoch' && currentEpoch) {
-        const epochStartSec = Math.floor(new Date(currentEpoch.start).getTime() / 1000);
-        dataToUse = chartData.filter(([ts]) => ts >= epochStartSec);
-        if (dataToUse.length === 0) dataToUse = chartData.slice(-7);
-      } else {
-        dataToUse = chartData.slice(-30);
-      }
-
-      for (const [timestamp, volume] of dataToUse) {
+      for (const [timestamp, volume] of volumeStats.totalDataChart) {
         const date = new Date(timestamp * 1000);
         volumeHistory.push({
           timestamp: date.toISOString(),
@@ -931,6 +1095,8 @@ export async function fetchDashboardData(
     const result: DashboardData = {
       traders,
       totalVolume24h: volumeStats?.total24h || 0,
+      totalVolume7d: volumeStats?.total7d || 0,
+      totalVolume30d: volumeStats?.total30d || 0,
       totalVolumeAllTime: volumeStats?.totalAllTime || 0,
       calculatedVolume24h,
       calculatedVolumeEpoch,
@@ -943,6 +1109,12 @@ export async function fetchDashboardData(
       calculatedVolume: totalVolume,
       currentEpoch: currentEpoch || undefined,
       epochs: EPOCHS,
+      // Overview data
+      userGrowth,
+      totalUsers,
+      newUsers24h,
+      openInterest: oiData.items,
+      totalOpenInterest: oiData.total,
     };
 
     dataCache.set(period, { data: result, timestamp: Date.now() });
@@ -962,6 +1134,13 @@ export {
   fetchDerivativesStats,
   fetchAllSubaccounts,
   fetchAccountSnapshots,
+  fetchAccountSnapshotsMultiTimestamp,
+  fetchOpenInterest,
+  computeUserGrowth,
+  countNewUsers24h,
+  extractCumulativeVolumes,
+  computePeriodVolume,
+  extractWalletAddress,
   fromX18,
   getProductName,
   isPerpProduct,

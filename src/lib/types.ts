@@ -99,9 +99,44 @@ export interface ProductVolume {
   tradeCount: number;
 }
 
+// User growth data point (daily granularity)
+export interface UserGrowthPoint {
+  date: string;           // ISO date "2026-01-15"
+  newUsers: number;       // new wallets created that day
+  cumulativeUsers: number; // running total of unique wallets
+}
+
+// Open interest per product
+export interface OpenInterestData {
+  productId: number;
+  name: string;
+  openInterestUsd: number;
+  openInterestContracts: number;
+  oraclePrice: number;
+}
+
+// Pre-computed leaderboard for a past epoch
+export interface EpochLeaderboard {
+  epochName: string;
+  epochStart: string;
+  epochEnd: string;
+  totalVolume: number;
+  traders: EpochTraderData[];
+}
+
+export interface EpochTraderData {
+  address: string;
+  volume: number;
+  volumeShare: number;
+  rank: number;
+  productCount: number;
+}
+
 export interface DashboardData {
   traders: AggregatedTraderData[];
   totalVolume24h: number;
+  totalVolume7d?: number;
+  totalVolume30d?: number;
   totalVolumeAllTime?: number;
   calculatedVolume24h?: number;
   calculatedVolumeEpoch?: number;
@@ -115,6 +150,14 @@ export interface DashboardData {
   // Epoch info
   currentEpoch?: Epoch;
   epochs?: Epoch[];
+  // Overview data
+  userGrowth?: UserGrowthPoint[];
+  totalUsers?: number;
+  newUsers24h?: number;
+  openInterest?: OpenInterestData[];
+  totalOpenInterest?: number;
+  // Pre-computed epoch leaderboards
+  epochLeaderboards?: EpochLeaderboard[];
 }
 
 export type TimePeriod = 'all' | 'epoch' | '24h';

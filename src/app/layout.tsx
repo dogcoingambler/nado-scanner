@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Nado Leaderboard | Top Perp Traders on Ink Chain",
-  description: "Track the top perpetual futures traders on Nado DEX. Real-time leaderboard showing volume, rankings, and market activity on Ink Chain.",
+  title: "Nado Dashboard | Perp Trading on Ink Chain",
+  description: "Nado DEX dashboard — volume, user growth, open interest, and trader leaderboard on Ink Chain.",
 };
 
 export default function RootLayout({
