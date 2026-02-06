@@ -180,6 +180,24 @@ async function fetchDerivativesStats(): Promise<DefiLlamaDerivativesResponse | n
   }
 }
 
+// Fee data from DefiLlama
+interface DefiLlamaFeesResponse {
+  total24h: number;
+  totalAllTime: number;
+  totalDataChart: [number, number][];
+}
+
+async function fetchFeesStats(): Promise<DefiLlamaFeesResponse | null> {
+  try {
+    const response = await fetch('https://api.llama.fi/summary/fees/nado');
+    if (!response.ok) return null;
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching DefiLlama fees data:', error);
+    return null;
+  }
+}
+
 // ============================================================
 // WALLET LOOKUP - instant lookup for any address
 // ============================================================
@@ -1024,11 +1042,12 @@ export async function fetchDashboardData(
   isRefreshing = true;
 
   try {
-    // Fetch derivatives stats, subaccounts, and open interest concurrently
-    const [volumeStats, subaccounts, oiData] = await Promise.all([
+    // Fetch derivatives stats, subaccounts, open interest, and fees concurrently
+    const [volumeStats, subaccounts, oiData, feeStats] = await Promise.all([
       fetchDerivativesStats(),
       fetchAllSubaccounts(40000),
       fetchOpenInterest(),
+      fetchFeesStats(),
     ]);
 
     console.log('DefiLlama derivatives stats:', {
@@ -1097,6 +1116,17 @@ export async function fetchDashboardData(
       }
     }
 
+    // Fee history from DefiLlama
+    const feeHistory: { timestamp: string; fees: number }[] = [];
+    if (feeStats?.totalDataChart) {
+      for (const [timestamp, fees] of feeStats.totalDataChart) {
+        feeHistory.push({
+          timestamp: new Date(timestamp * 1000).toISOString(),
+          fees,
+        });
+      }
+    }
+
     const result: DashboardData = {
       traders,
       totalVolume24h: volumeStats?.total24h || 0,
@@ -1120,6 +1150,10 @@ export async function fetchDashboardData(
       newUsers24h,
       openInterest: oiData.items,
       totalOpenInterest: oiData.total,
+      // Fee data
+      totalFees24h: feeStats?.total24h || 0,
+      totalFeesAllTime: feeStats?.totalAllTime || 0,
+      feeHistory,
     };
 
     dataCache.set(period, { data: result, timestamp: Date.now() });

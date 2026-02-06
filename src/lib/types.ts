@@ -156,6 +156,10 @@ export interface DashboardData {
   newUsers24h?: number;
   openInterest?: OpenInterestData[];
   totalOpenInterest?: number;
+  // Fee data from DefiLlama
+  totalFees24h?: number;
+  totalFeesAllTime?: number;
+  feeHistory?: { timestamp: string; fees: number }[];
   // Pre-computed epoch leaderboards
   epochLeaderboards?: EpochLeaderboard[];
 }
