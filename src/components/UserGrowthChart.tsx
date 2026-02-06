@@ -46,7 +46,8 @@ export default function UserGrowthChart({ data, isLoading }: UserGrowthChartProp
   }
 
   const formatXAxis = (date: string) => {
-    const d = new Date(date);
+    // date is "YYYY-MM-DD" format
+    const d = new Date(date + 'T00:00:00Z');
     return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
@@ -81,7 +82,6 @@ export default function UserGrowthChart({ data, isLoading }: UserGrowthChartProp
                 fontSize={11}
                 tickLine={false}
                 axisLine={{ stroke: '#1F1F1F' }}
-                label={{ value: 'New Users', angle: -90, position: 'insideLeft', style: { fill: '#6B6B6B', fontSize: 10 } }}
               />
               <YAxis
                 yAxisId="right"
@@ -105,8 +105,8 @@ export default function UserGrowthChart({ data, isLoading }: UserGrowthChartProp
                   return [(value as number).toLocaleString(), label];
                 }}
                 labelFormatter={(label) => {
-                  const d = new Date(label);
-                  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+                  const d = new Date(label + 'T00:00:00Z');
+                  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
                 }}
               />
               <Bar

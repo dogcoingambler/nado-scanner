@@ -807,11 +807,14 @@ function formatProductVolumes(productVolumes: Map<number, number>): ProductVolum
 
 function computeUserGrowth(subaccounts: SubaccountInfo[]): UserGrowthPoint[] {
   // Track unique wallets by first-seen date
-  const walletFirstSeen = new Map<string, string>(); // wallet → earliest created_at date
+  // created_at is a Unix timestamp (seconds), convert to ISO date
+  const walletFirstSeen = new Map<string, string>(); // wallet → earliest date "YYYY-MM-DD"
   for (const sub of subaccounts) {
     if (!sub.created_at || !sub.address) continue;
     const addr = sub.address.toLowerCase();
-    const day = sub.created_at.slice(0, 10); // "2026-01-15"
+    const ts = parseInt(sub.created_at, 10);
+    if (isNaN(ts)) continue;
+    const day = new Date(ts * 1000).toISOString().slice(0, 10); // "2026-01-15"
     const existing = walletFirstSeen.get(addr);
     if (!existing || day < existing) {
       walletFirstSeen.set(addr, day);
@@ -835,12 +838,14 @@ function computeUserGrowth(subaccounts: SubaccountInfo[]): UserGrowthPoint[] {
 
 // Count new unique wallets in the last 24h
 function countNewUsers24h(subaccounts: SubaccountInfo[]): number {
-  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const oneDayAgoMs = Date.now() - 24 * 60 * 60 * 1000;
   const recentWallets = new Set<string>();
   for (const sub of subaccounts) {
     if (!sub.created_at || !sub.address) continue;
-    const createdAt = new Date(sub.created_at);
-    if (createdAt >= oneDayAgo) {
+    const ts = parseInt(sub.created_at, 10);
+    if (isNaN(ts)) continue;
+    const createdAtMs = ts * 1000;
+    if (createdAtMs >= oneDayAgoMs) {
       recentWallets.add(sub.address.toLowerCase());
     }
   }

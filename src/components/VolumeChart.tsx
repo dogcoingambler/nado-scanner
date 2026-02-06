@@ -1,8 +1,10 @@
 'use client';
 
+import { useMemo } from 'react';
 import {
-  AreaChart,
-  Area,
+  ComposedChart,
+  Bar,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -18,14 +20,23 @@ interface VolumeChartProps {
 }
 
 export default function VolumeChart({ data, isLoading }: VolumeChartProps) {
+  // Compute cumulative volume
+  const chartData = useMemo(() => {
+    let cumulative = 0;
+    return data.map((d) => {
+      cumulative += d.volume;
+      return { ...d, cumulativeVolume: cumulative };
+    });
+  }, [data]);
+
   if (isLoading) {
     return (
       <div className="rounded-lg overflow-hidden" style={{ background: '#141414', border: '1px solid #1F1F1F' }}>
         <div className="p-5 border-b" style={{ borderColor: '#1F1F1F' }}>
-          <h2 className="text-lg font-bold text-white">[ DAILY VOLUME ]</h2>
+          <h2 className="text-lg font-bold text-white">Trading Volume</h2>
         </div>
         <div className="p-5">
-          <div className="h-64 animate-pulse rounded" style={{ background: '#1A1A1A' }} />
+          <div className="h-72 animate-pulse rounded" style={{ background: '#1A1A1A' }} />
         </div>
       </div>
     );
@@ -35,7 +46,7 @@ export default function VolumeChart({ data, isLoading }: VolumeChartProps) {
     return (
       <div className="rounded-lg overflow-hidden" style={{ background: '#141414', border: '1px solid #1F1F1F' }}>
         <div className="p-5 border-b" style={{ borderColor: '#1F1F1F' }}>
-          <h2 className="text-lg font-bold text-white">[ DAILY VOLUME ]</h2>
+          <h2 className="text-lg font-bold text-white">Trading Volume</h2>
         </div>
         <div className="p-12 text-center" style={{ color: '#6B6B6B' }}>
           <p>No data available</p>
@@ -52,19 +63,13 @@ export default function VolumeChart({ data, isLoading }: VolumeChartProps) {
   return (
     <div className="rounded-lg overflow-hidden" style={{ background: '#141414', border: '1px solid #1F1F1F' }}>
       <div className="p-5 border-b" style={{ borderColor: '#1F1F1F' }}>
-        <h2 className="text-lg font-bold text-white">[ DAILY VOLUME ]</h2>
-        <p className="text-sm mt-1" style={{ color: '#6B6B6B' }}>Perp volume from DefiLlama</p>
+        <h2 className="text-lg font-bold text-white">Trading Volume</h2>
+        <p className="text-sm mt-1" style={{ color: '#6B6B6B' }}>The daily trading volume and the cumulative volume.</p>
       </div>
       <div className="p-5">
-        <div className="h-64">
+        <div className="h-72">
           <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={data} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
-              <defs>
-                <linearGradient id="volumeGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#22C55E" stopOpacity={0.25} />
-                  <stop offset="95%" stopColor="#22C55E" stopOpacity={0} />
-                </linearGradient>
-              </defs>
+            <ComposedChart data={chartData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#1F1F1F" />
               <XAxis
                 dataKey="timestamp"
@@ -75,6 +80,16 @@ export default function VolumeChart({ data, isLoading }: VolumeChartProps) {
                 axisLine={{ stroke: '#1F1F1F' }}
               />
               <YAxis
+                yAxisId="left"
+                tickFormatter={(value) => formatVolume(value)}
+                stroke="#6B6B6B"
+                fontSize={11}
+                tickLine={false}
+                axisLine={{ stroke: '#1F1F1F' }}
+              />
+              <YAxis
+                yAxisId="right"
+                orientation="right"
                 tickFormatter={(value) => formatVolume(value)}
                 stroke="#6B6B6B"
                 fontSize={11}
@@ -89,19 +104,31 @@ export default function VolumeChart({ data, isLoading }: VolumeChartProps) {
                   fontSize: '12px',
                 }}
                 labelStyle={{ color: '#6B6B6B' }}
-                itemStyle={{ color: '#22C55E' }}
-                formatter={(value) => [formatVolume(value as number), 'Volume']}
-                labelFormatter={(label) => new Date(label).toLocaleDateString()}
+                formatter={(value, name) => {
+                  const label = name === 'volume' ? 'Daily Volume' : 'Cumulative';
+                  return [formatVolume(value as number), label];
+                }}
+                labelFormatter={(label) => {
+                  const d = new Date(label);
+                  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+                }}
               />
-              <Area
-                type="monotone"
+              <Bar
+                yAxisId="left"
                 dataKey="volume"
-                stroke="#22C55E"
-                strokeWidth={2}
-                fillOpacity={1}
-                fill="url(#volumeGradient)"
+                fill="#8B5CF6"
+                opacity={0.8}
+                radius={[2, 2, 0, 0]}
               />
-            </AreaChart>
+              <Line
+                yAxisId="right"
+                type="monotone"
+                dataKey="cumulativeVolume"
+                stroke="#FFFFFF"
+                strokeWidth={2}
+                dot={false}
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
       </div>
