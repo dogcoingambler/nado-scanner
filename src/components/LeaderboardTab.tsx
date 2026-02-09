@@ -28,8 +28,6 @@ export default function LeaderboardTab({ data, isLoading }: LeaderboardTabProps)
   // map its pre-computed data into AggregatedTraderData format
   const epochLeaderboard: EpochLeaderboard | null = useMemo(() => {
     if (!selectedEpochName || !data?.epochLeaderboards) return null;
-    // Check if this is the current epoch (use main trader data)
-    if (data.currentEpoch?.name === selectedEpochName) return null;
     return data.epochLeaderboards.find(e => e.epochName === selectedEpochName) || null;
   }, [selectedEpochName, data]);
 

@@ -1007,6 +1007,13 @@ let subaccountIndex: Map<string, string[]> | null = null;
 let subaccountIndexTimestamp = 0;
 const SUBACCOUNT_INDEX_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
+// Cached subaccount IDs for reuse across requests
+let cachedSubaccountIds: string[] | null = null;
+let cachedSubaccountIdsTimestamp = 0;
+
+// Past epoch leaderboards: permanently cached (immutable once epoch ends)
+const epochLeaderboardCache = new Map<string, EpochLeaderboard>();
+
 function buildSubaccountIndex(subaccounts: SubaccountInfo[]): void {
   const index = new Map<string, string[]>();
   for (const sub of subaccounts) {
@@ -1019,6 +1026,60 @@ function buildSubaccountIndex(subaccounts: SubaccountInfo[]): void {
   subaccountIndex = index;
   subaccountIndexTimestamp = Date.now();
   console.log(`Built subaccount index: ${index.size} wallets → ${subaccounts.length} subaccounts`);
+}
+
+// Get a single epoch's leaderboard (on-demand, cached permanently for past epochs)
+export async function getEpochLeaderboard(epochName: string): Promise<EpochLeaderboard | null> {
+  // Check permanent cache first
+  const cached = epochLeaderboardCache.get(epochName);
+  if (cached) {
+    console.log(`Returning cached epoch leaderboard for ${epochName}`);
+    return cached;
+  }
+
+  // Find the epoch
+  const epoch = EPOCHS.find(e => e.name === epochName);
+  if (!epoch) {
+    console.log(`Epoch not found: ${epochName}`);
+    return null;
+  }
+
+  const now = new Date();
+  const epochEnd = new Date(epoch.end);
+
+  // Don't compute future epochs
+  if (new Date(epoch.start) > now) {
+    console.log(`Epoch ${epochName} hasn't started yet`);
+    return null;
+  }
+
+  // For current epoch, use "now" as the end timestamp
+  const isCurrentEpoch = now >= new Date(epoch.start) && now < epochEnd;
+  const effectiveEpoch = isCurrentEpoch
+    ? { ...epoch, end: new Date().toISOString() }
+    : epoch;
+
+  // Get subaccount IDs (reuse cached if available, otherwise fetch)
+  let subaccountIds = cachedSubaccountIds;
+  if (!subaccountIds || Date.now() - cachedSubaccountIdsTimestamp >= SUBACCOUNT_INDEX_TTL_MS) {
+    console.log('Fetching subaccounts for epoch leaderboard...');
+    const subaccounts = await fetchAllSubaccounts(40000);
+    subaccountIds = subaccounts.map(s => s.subaccount);
+    cachedSubaccountIds = subaccountIds;
+    cachedSubaccountIdsTimestamp = Date.now();
+    buildSubaccountIndex(subaccounts);
+  }
+
+  console.log(`Computing epoch leaderboard for ${epochName} (${subaccountIds.length} subaccounts)...`);
+  const leaderboard = await fetchEpochLeaderboard(effectiveEpoch, subaccountIds);
+
+  // Only cache permanently if the epoch is fully over
+  if (!isCurrentEpoch) {
+    epochLeaderboardCache.set(epochName, leaderboard);
+    console.log(`Cached epoch leaderboard for ${epochName} permanently`);
+  }
+
+  return leaderboard;
 }
 
 // Main function to fetch dashboard data
@@ -1067,6 +1128,11 @@ export async function fetchDashboardData(
     // Build subaccount index for fast wallet lookups
     buildSubaccountIndex(subaccounts);
 
+    // Cache subaccount IDs for reuse by epoch leaderboard endpoint
+    const subaccountIds = subaccounts.map(s => s.subaccount);
+    cachedSubaccountIds = subaccountIds;
+    cachedSubaccountIdsTimestamp = Date.now();
+
     const now = Math.floor(Date.now() / 1000);
     const ts24hAgo = now - 24 * 60 * 60;
 
@@ -1078,7 +1144,6 @@ export async function fetchDashboardData(
 
     console.log(`Current epoch: ${currentEpoch?.name || 'none'} (start: ${currentEpoch?.start || 'N/A'})`);
 
-    const subaccountIds = subaccounts.map(s => s.subaccount);
     const timestamps = [now, ts24hAgo, tsEpochStart];
 
     // Fetch all 3 timestamps together so each batch has consistent data

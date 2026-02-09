@@ -35,7 +35,7 @@ export default function EpochSelector({
           const isCurrent = currentEpoch?.name === epoch.name;
           const isPast = new Date(epoch.end) <= now;
           const isFuture = new Date(epoch.start) > now;
-          const hasData = isCurrent || cachedNames.has(epoch.name);
+          const hasData = cachedNames.has(epoch.name);
           const isSelected = selectedEpochName === epoch.name;
           const isDisabled = isFuture || (!isCurrent && !hasData);
 
