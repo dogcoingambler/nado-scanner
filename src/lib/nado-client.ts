@@ -418,11 +418,11 @@ async function fetchAllSubaccounts(maxSubaccounts: number = 40000): Promise<Suba
   return allSubaccounts;
 }
 
-// Fetch a single batch of account snapshots with retry
+// Fetch a single batch of account snapshots with retry and exponential backoff
 async function fetchSnapshotBatch(
   batch: string[],
   timestamp: number,
-  retries = 2
+  retries = 3
 ): Promise<[string, AccountSnapshotProduct[]][]> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -445,7 +445,8 @@ async function fetchSnapshotBatch(
 
       if (!response.ok) {
         if (attempt < retries) {
-          await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+          const delay = 500 * Math.pow(2, attempt); // 500ms, 1s, 2s, 4s
+          await new Promise(r => setTimeout(r, delay));
           continue;
         }
         return [];
@@ -454,7 +455,8 @@ async function fetchSnapshotBatch(
       const data = await response.json();
       if (data.error) {
         if (attempt < retries) {
-          await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+          const delay = 500 * Math.pow(2, attempt);
+          await new Promise(r => setTimeout(r, delay));
           continue;
         }
         return [];
@@ -476,7 +478,8 @@ async function fetchSnapshotBatch(
       return entries;
     } catch {
       if (attempt < retries) {
-        await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+        const delay = 500 * Math.pow(2, attempt);
+        await new Promise(r => setTimeout(r, delay));
         continue;
       }
       return [];
@@ -485,7 +488,7 @@ async function fetchSnapshotBatch(
   return [];
 }
 
-// Fetch account snapshots for multiple subaccounts
+// Fetch account snapshots for multiple subaccounts (single timestamp, batch size 40)
 async function fetchAccountSnapshots(
   subaccounts: string[],
   timestamp: number
@@ -493,15 +496,17 @@ async function fetchAccountSnapshots(
   const result = new Map<string, AccountSnapshotProduct[]>();
 
   const batchSize = 40;
-  const concurrency = 5; // Lower concurrency = less rate limiting = more reliable
+  const concurrency = 4;
+  const delayMs = 300;
   const batches: string[][] = [];
 
   for (let i = 0; i < subaccounts.length; i += batchSize) {
     batches.push(subaccounts.slice(i, i + batchSize));
   }
 
-  console.log(`Fetching snapshots: ${batches.length} batches of ${batchSize}, ${concurrency} concurrent`);
+  console.log(`Fetching snapshots: ${batches.length} batches of ${batchSize}, ${concurrency} concurrent, ${delayMs}ms delay`);
   const startTime = Date.now();
+  let failedBatches = 0;
 
   for (let i = 0; i < batches.length; i += concurrency) {
     const concurrentBatches = batches.slice(i, i + concurrency);
@@ -511,6 +516,7 @@ async function fetchAccountSnapshots(
     );
 
     for (const entries of batchResults) {
+      if (entries.length === 0) failedBatches++;
       for (const [subaccount, products] of entries) {
         result.set(subaccount, products);
       }
@@ -518,16 +524,17 @@ async function fetchAccountSnapshots(
 
     // Delay between concurrent rounds to avoid rate limiting
     if (i + concurrency < batches.length) {
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
     const processed = Math.min(i + concurrency, batches.length);
     if (processed % 50 === 0) {
-      console.log(`  Snapshots: ${processed}/${batches.length} batches (${result.size} subaccounts so far)`);
+      console.log(`  Snapshots: ${processed}/${batches.length} batches (${result.size} subaccounts, ${failedBatches} failed)`);
     }
   }
 
-  console.log(`Fetched snapshots for ${result.size}/${subaccounts.length} subaccounts in ${Date.now() - startTime}ms`);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+  console.log(`Fetched snapshots for ${result.size}/${subaccounts.length} subaccounts in ${elapsed}s (${failedBatches} failed batches)`);
   return result;
 }
 
@@ -538,8 +545,9 @@ async function fetchAccountSnapshotsMultiTimestamp(
   timestamps: number[],
 ): Promise<Map<number, Map<string, AccountSnapshotProduct[]>>> {
   const tsCount = timestamps.length;
-  const batchSize = Math.floor(40 / tsCount); // 13 for 3 timestamps
-  const concurrency = 5;
+  const batchSize = Math.floor(40 / tsCount);
+  const concurrency = 4;
+  const delayMs = 300;
   const batches: string[][] = [];
 
   for (let i = 0; i < subaccounts.length; i += batchSize) {
@@ -548,6 +556,7 @@ async function fetchAccountSnapshotsMultiTimestamp(
 
   console.log(`Fetching multi-ts snapshots: ${batches.length} batches of ${batchSize} × ${tsCount} timestamps, ${concurrency} concurrent`);
   const startTime = Date.now();
+  let failedBatches = 0;
 
   // Initialize result maps per timestamp
   const result = new Map<number, Map<string, AccountSnapshotProduct[]>>();
@@ -560,7 +569,7 @@ async function fetchAccountSnapshotsMultiTimestamp(
 
     const batchResults = await Promise.all(
       concurrentBatches.map(async (batch) => {
-        for (let attempt = 0; attempt <= 2; attempt++) {
+        for (let attempt = 0; attempt <= 3; attempt++) {
           try {
             const controller = new AbortController();
             const timeoutId = setTimeout(() => controller.abort(), 30000);
@@ -576,8 +585,9 @@ async function fetchAccountSnapshotsMultiTimestamp(
 
             clearTimeout(timeoutId);
             if (!response.ok) {
-              if (attempt < 2) {
-                await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+              if (attempt < 3) {
+                const delay = 500 * Math.pow(2, attempt);
+                await new Promise(r => setTimeout(r, delay));
                 continue;
               }
               return [];
@@ -585,8 +595,9 @@ async function fetchAccountSnapshotsMultiTimestamp(
 
             const data = await response.json();
             if (data.error) {
-              if (attempt < 2) {
-                await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+              if (attempt < 3) {
+                const delay = 500 * Math.pow(2, attempt);
+                await new Promise(r => setTimeout(r, delay));
                 continue;
               }
               return [];
@@ -606,8 +617,9 @@ async function fetchAccountSnapshotsMultiTimestamp(
             }
             return entries;
           } catch {
-            if (attempt < 2) {
-              await new Promise(r => setTimeout(r, 300 * (attempt + 1)));
+            if (attempt < 3) {
+              const delay = 500 * Math.pow(2, attempt);
+              await new Promise(r => setTimeout(r, delay));
               continue;
             }
             return [];
@@ -618,6 +630,7 @@ async function fetchAccountSnapshotsMultiTimestamp(
     );
 
     for (const entries of batchResults) {
+      if (entries.length === 0) failedBatches++;
       for (const { subaccount, timestamp, products } of entries) {
         const tsMap = result.get(timestamp);
         if (tsMap) {
@@ -627,19 +640,19 @@ async function fetchAccountSnapshotsMultiTimestamp(
     }
 
     if (i + concurrency < batches.length) {
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, delayMs));
     }
 
     const processed = Math.min(i + concurrency, batches.length);
-    if (processed % 150 === 0) {
+    if (processed % 100 === 0) {
       const firstTs = result.get(timestamps[0]);
-      console.log(`  Multi-ts snapshots: ${processed}/${batches.length} batches (${firstTs?.size || 0} subaccounts so far)`);
+      console.log(`  Multi-ts snapshots: ${processed}/${batches.length} batches (${firstTs?.size || 0} subaccounts, ${failedBatches} failed)`);
     }
   }
 
-  const elapsed = Date.now() - startTime;
+  const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
   const firstTs = result.get(timestamps[0]);
-  console.log(`Fetched multi-ts snapshots for ${firstTs?.size || 0} subaccounts in ${elapsed}ms`);
+  console.log(`Fetched multi-ts snapshots for ${firstTs?.size || 0} subaccounts in ${elapsedSec}s (${failedBatches} failed batches)`);
   return result;
 }
 
@@ -937,10 +950,16 @@ export async function fetchEpochLeaderboard(
   const startTs = Math.floor(new Date(epoch.start).getTime() / 1000);
   const endTs = Math.floor(new Date(epoch.end).getTime() / 1000);
 
-  // 2 timestamps → batch size = 20
-  const multiSnapshots = await fetchAccountSnapshotsMultiTimestamp(subaccountIds, [startTs, endTs]);
-  const snapshotsStart = multiSnapshots.get(startTs) || new Map();
-  const snapshotsEnd = multiSnapshots.get(endTs) || new Map();
+  // Fetch start and end snapshots separately with batch size 40 each
+  // This is more reliable than multi-timestamp (batch size 20) since each
+  // API call is simpler and less likely to fail or hit response size limits
+  console.log(`  Fetching end-of-epoch snapshots (${subaccountIds.length} subaccounts)...`);
+  const snapshotsEnd = await fetchAccountSnapshots(subaccountIds, endTs);
+
+  // Only fetch start snapshots for subaccounts that have end data
+  const activeIds = Array.from(snapshotsEnd.keys());
+  console.log(`  Fetching start-of-epoch snapshots (${activeIds.length} active subaccounts)...`);
+  const snapshotsStart = await fetchAccountSnapshots(activeIds, startTs);
 
   console.log(`  Epoch ${epoch.name}: start=${snapshotsStart.size}, end=${snapshotsEnd.size} subaccounts`);
 
@@ -1144,16 +1163,18 @@ export async function fetchDashboardData(
 
     console.log(`Current epoch: ${currentEpoch?.name || 'none'} (start: ${currentEpoch?.start || 'N/A'})`);
 
-    const timestamps = [now, ts24hAgo, tsEpochStart];
+    // Step 1: Fetch all-time snapshots with single timestamp (batch size 40)
+    // This is 3x more efficient than multi-timestamp (batch size 13 for 3 timestamps)
+    console.log('Step 1: Fetching current snapshots (single timestamp, batch size 40)...');
+    const snapshotsNow = await fetchAccountSnapshots(subaccountIds, now);
 
-    // Fetch all 3 timestamps together so each batch has consistent data
-    // With 3 timestamps: batch size = floor(40/3) = 13 subaccounts per request
-    console.log('Fetching multi-timestamp snapshots (now, 24h ago, epoch start)...');
-    const multiSnapshots = await fetchAccountSnapshotsMultiTimestamp(subaccountIds, timestamps);
+    // Step 2: Fetch period data only for subaccounts that have all-time data
+    const activeSubaccountIds = Array.from(snapshotsNow.keys());
+    console.log(`Step 2: Fetching period snapshots for ${activeSubaccountIds.length} active subaccounts (2 timestamps, batch size 20)...`);
+    const periodSnapshots = await fetchAccountSnapshotsMultiTimestamp(activeSubaccountIds, [ts24hAgo, tsEpochStart]);
 
-    const snapshotsNow = multiSnapshots.get(now) || new Map();
-    const snapshots24hAgo = multiSnapshots.get(ts24hAgo) || new Map();
-    const snapshotsEpochStart = multiSnapshots.get(tsEpochStart) || new Map();
+    const snapshots24hAgo = periodSnapshots.get(ts24hAgo) || new Map();
+    const snapshotsEpochStart = periodSnapshots.get(tsEpochStart) || new Map();
 
     console.log(`Got snapshots: now=${snapshotsNow.size}, 24h-ago=${snapshots24hAgo.size}, epoch-start=${snapshotsEpochStart.size}`);
 
