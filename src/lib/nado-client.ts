@@ -1100,13 +1100,6 @@ export async function fetchDashboardData(
     const calculatedVolume24h = traders.reduce((sum, t) => sum + t.volume24h, 0);
     const calculatedVolumeEpoch = traders.reduce((sum, t) => sum + t.volumeEpoch, 0);
 
-    // Compute current epoch volume from DefiLlama chart (accurate total)
-    let calculatedVolumeEpochChart = 0;
-    if (currentEpoch && volumeStats?.totalDataChart) {
-      const epochVolumes = computeEpochVolumesFromChart(volumeStats.totalDataChart, [currentEpoch]);
-      calculatedVolumeEpochChart = epochVolumes.get(currentEpoch.name) || 0;
-    }
-
     const formattedProductVolumes = formatProductVolumes(productVolumes);
 
     // Always include full volume history (for overview tab charts)
@@ -1142,7 +1135,6 @@ export async function fetchDashboardData(
       totalVolumeAllTime: volumeStats?.totalAllTime || 0,
       calculatedVolume24h,
       calculatedVolumeEpoch,
-      calculatedVolumeEpochChart,
       totalTrades24h: 0,
       uniqueTraders24h: traders.length,
       volumeHistory,
@@ -1174,28 +1166,6 @@ export async function fetchDashboardData(
     console.error('fetchDashboardData error:', message);
     throw new Error(`Failed to fetch dashboard data: ${message}`);
   }
-}
-
-// Compute per-epoch volume totals from DefiLlama daily chart data
-// Each chart entry is [unixTimestamp, dailyVolume]
-export function computeEpochVolumesFromChart(
-  chartData: [number, number][],
-  epochs: Epoch[],
-): Map<string, number> {
-  const result = new Map<string, number>();
-  for (const epoch of epochs) {
-    const startMs = new Date(epoch.start).getTime();
-    const endMs = new Date(epoch.end).getTime();
-    let total = 0;
-    for (const [ts, volume] of chartData) {
-      const dayMs = ts * 1000;
-      if (dayMs >= startMs && dayMs < endMs) {
-        total += volume;
-      }
-    }
-    result.set(epoch.name, total);
-  }
-  return result;
 }
 
 // Export utilities
