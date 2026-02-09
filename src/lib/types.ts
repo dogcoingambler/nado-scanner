@@ -120,7 +120,8 @@ export interface EpochLeaderboard {
   epochName: string;
   epochStart: string;
   epochEnd: string;
-  totalVolume: number;
+  totalVolume: number;       // from Nado API snapshots (used for ranking)
+  chartVolume?: number;      // from DefiLlama daily chart (accurate total)
   traders: EpochTraderData[];
 }
 
@@ -140,6 +141,7 @@ export interface DashboardData {
   totalVolumeAllTime?: number;
   calculatedVolume24h?: number;
   calculatedVolumeEpoch?: number;
+  calculatedVolumeEpochChart?: number;  // from DefiLlama (accurate)
   totalTrades24h: number;
   uniqueTraders24h: number;
   volumeHistory: VolumeDataPoint[];

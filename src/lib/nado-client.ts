@@ -662,23 +662,23 @@ function extractCumulativeVolumes(
 }
 
 // Compute period volume = cumulative_now - cumulative_past
-// ONLY includes subaccounts present in BOTH snapshots to avoid
-// treating missing past data as "all volume is in this period"
+// If a subaccount is missing from the past snapshot it was created during
+// the period, so its past volume is 0 and the full cumulative counts.
 function computePeriodVolume(
   nowVolumes: Map<string, Map<number, number>>,
   pastVolumes: Map<string, Map<number, number>> | null
 ): Map<string, Map<number, number>> {
   const result = new Map<string, Map<number, number>>();
-  if (!pastVolumes) return result;
+  if (!pastVolumes) return new Map(nowVolumes);
 
   for (const [subaccount, nowProducts] of nowVolumes) {
     const pastProducts = pastVolumes.get(subaccount);
-    // Skip subaccounts missing from past snapshot — we can't compute their period volume
-    if (!pastProducts) continue;
+    // If subaccount wasn't in the past snapshot it was created during the
+    // period — treat past volume as 0 (full cumulative = period volume).
 
     const periodProducts = new Map<number, number>();
     for (const [productId, nowVol] of nowProducts) {
-      const pastVol = pastProducts.get(productId) || 0;
+      const pastVol = pastProducts?.get(productId) || 0;
       const diff = nowVol - pastVol;
       if (diff > 0) {
         periodProducts.set(productId, diff);
@@ -1100,6 +1100,13 @@ export async function fetchDashboardData(
     const calculatedVolume24h = traders.reduce((sum, t) => sum + t.volume24h, 0);
     const calculatedVolumeEpoch = traders.reduce((sum, t) => sum + t.volumeEpoch, 0);
 
+    // Compute current epoch volume from DefiLlama chart (accurate total)
+    let calculatedVolumeEpochChart = 0;
+    if (currentEpoch && volumeStats?.totalDataChart) {
+      const epochVolumes = computeEpochVolumesFromChart(volumeStats.totalDataChart, [currentEpoch]);
+      calculatedVolumeEpochChart = epochVolumes.get(currentEpoch.name) || 0;
+    }
+
     const formattedProductVolumes = formatProductVolumes(productVolumes);
 
     // Always include full volume history (for overview tab charts)
@@ -1135,6 +1142,7 @@ export async function fetchDashboardData(
       totalVolumeAllTime: volumeStats?.totalAllTime || 0,
       calculatedVolume24h,
       calculatedVolumeEpoch,
+      calculatedVolumeEpochChart,
       totalTrades24h: 0,
       uniqueTraders24h: traders.length,
       volumeHistory,
@@ -1166,6 +1174,28 @@ export async function fetchDashboardData(
     console.error('fetchDashboardData error:', message);
     throw new Error(`Failed to fetch dashboard data: ${message}`);
   }
+}
+
+// Compute per-epoch volume totals from DefiLlama daily chart data
+// Each chart entry is [unixTimestamp, dailyVolume]
+export function computeEpochVolumesFromChart(
+  chartData: [number, number][],
+  epochs: Epoch[],
+): Map<string, number> {
+  const result = new Map<string, number>();
+  for (const epoch of epochs) {
+    const startMs = new Date(epoch.start).getTime();
+    const endMs = new Date(epoch.end).getTime();
+    let total = 0;
+    for (const [ts, volume] of chartData) {
+      const dayMs = ts * 1000;
+      if (dayMs >= startMs && dayMs < endMs) {
+        total += volume;
+      }
+    }
+    result.set(epoch.name, total);
+  }
+  return result;
 }
 
 // Export utilities

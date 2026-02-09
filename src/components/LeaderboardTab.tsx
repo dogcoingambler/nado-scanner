@@ -65,9 +65,10 @@ export default function LeaderboardTab({ data, isLoading }: LeaderboardTabProps)
   const displayEpochName = epochLeaderboard ? selectedEpochName : data?.currentEpoch?.name;
 
   // Stats for the selected view
+  // Prefer DefiLlama chart volumes (accurate) over Nado API snapshot volumes
   const totalVolumeEpoch = epochLeaderboard
-    ? epochLeaderboard.totalVolume
-    : (data?.calculatedVolumeEpoch || 0);
+    ? (epochLeaderboard.chartVolume || epochLeaderboard.totalVolume)
+    : (data?.calculatedVolumeEpochChart || data?.calculatedVolumeEpoch || 0);
 
   const handleEpochSelect = (epochName: string | null) => {
     setSelectedEpochName(epochName);

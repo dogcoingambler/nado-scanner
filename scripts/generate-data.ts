@@ -16,6 +16,8 @@ import {
   fetchDashboardData,
   fetchEpochLeaderboard,
   fetchAllSubaccounts,
+  fetchDerivativesStats,
+  computeEpochVolumesFromChart,
   EPOCHS,
   getCurrentEpoch,
 } from '../src/lib/nado-client';
@@ -108,6 +110,19 @@ async function main() {
 
     // Sort epoch leaderboards chronologically
     epochCache.sort((a, b) => a.epochStart.localeCompare(b.epochStart));
+
+    // Compute accurate per-epoch volumes from DefiLlama daily chart
+    const derivStats = await fetchDerivativesStats();
+    if (derivStats?.totalDataChart) {
+      const epochChartVolumes = computeEpochVolumesFromChart(derivStats.totalDataChart, EPOCHS);
+      for (const ep of epochCache) {
+        const cv = epochChartVolumes.get(ep.epochName);
+        if (cv !== undefined && cv > 0) {
+          ep.chartVolume = cv;
+          console.log(`  ${ep.epochName}: chartVolume=$${(cv / 1e9).toFixed(2)}B (Nado API=$${(ep.totalVolume / 1e9).toFixed(2)}B)`);
+        }
+      }
+    }
 
     // Add generation metadata
     const output = {
