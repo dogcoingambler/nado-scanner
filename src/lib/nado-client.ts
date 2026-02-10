@@ -489,6 +489,7 @@ async function fetchSnapshotBatch(
 }
 
 // Fetch account snapshots for multiple subaccounts (single timestamp, batch size 40)
+// Includes automatic retry passes for missed subaccounts (rate limiting recovery)
 async function fetchAccountSnapshots(
   subaccounts: string[],
   timestamp: number
@@ -498,43 +499,75 @@ async function fetchAccountSnapshots(
   const batchSize = 40;
   const concurrency = 4;
   const delayMs = 300;
-  const batches: string[][] = [];
 
-  for (let i = 0; i < subaccounts.length; i += batchSize) {
-    batches.push(subaccounts.slice(i, i + batchSize));
-  }
+  async function runPass(
+    ids: string[],
+    passLabel: string,
+    passConcurrency: number,
+    passDelay: number,
+  ): Promise<number> {
+    const batches: string[][] = [];
+    for (let i = 0; i < ids.length; i += batchSize) {
+      batches.push(ids.slice(i, i + batchSize));
+    }
 
-  console.log(`Fetching snapshots: ${batches.length} batches of ${batchSize}, ${concurrency} concurrent, ${delayMs}ms delay`);
-  const startTime = Date.now();
-  let failedBatches = 0;
+    console.log(`${passLabel}: ${batches.length} batches of ${batchSize}, ${passConcurrency} concurrent, ${passDelay}ms delay`);
+    let failedBatches = 0;
 
-  for (let i = 0; i < batches.length; i += concurrency) {
-    const concurrentBatches = batches.slice(i, i + concurrency);
+    for (let i = 0; i < batches.length; i += passConcurrency) {
+      const concurrentBatches = batches.slice(i, i + passConcurrency);
 
-    const batchResults = await Promise.all(
-      concurrentBatches.map(batch => fetchSnapshotBatch(batch, timestamp))
-    );
+      const batchResults = await Promise.all(
+        concurrentBatches.map(batch => fetchSnapshotBatch(batch, timestamp))
+      );
 
-    for (const entries of batchResults) {
-      if (entries.length === 0) failedBatches++;
-      for (const [subaccount, products] of entries) {
-        result.set(subaccount, products);
+      for (const entries of batchResults) {
+        if (entries.length === 0) failedBatches++;
+        for (const [subaccount, products] of entries) {
+          result.set(subaccount, products);
+        }
+      }
+
+      if (i + passConcurrency < batches.length) {
+        await new Promise(resolve => setTimeout(resolve, passDelay));
+      }
+
+      const processed = Math.min(i + passConcurrency, batches.length);
+      if (processed % 50 === 0 || processed === batches.length) {
+        console.log(`  ${passLabel}: ${processed}/${batches.length} batches (${result.size} total subaccounts, ${failedBatches} failed)`);
       }
     }
+    return failedBatches;
+  }
 
-    // Delay between concurrent rounds to avoid rate limiting
-    if (i + concurrency < batches.length) {
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-    }
+  const startTime = Date.now();
 
-    const processed = Math.min(i + concurrency, batches.length);
-    if (processed % 50 === 0) {
-      console.log(`  Snapshots: ${processed}/${batches.length} batches (${result.size} subaccounts, ${failedBatches} failed)`);
+  // Pass 1: main fetch
+  const failed1 = await runPass(subaccounts, 'Pass 1', concurrency, delayMs);
+
+  // Pass 2: retry missed subaccounts with lower concurrency
+  const missed1 = subaccounts.filter(s => !result.has(s));
+  if (missed1.length > 0 && missed1.length < subaccounts.length * 0.95) {
+    console.log(`  Waiting 5s before retry pass (${missed1.length} missed subaccounts)...`);
+    await new Promise(r => setTimeout(r, 5000));
+    const failed2 = await runPass(missed1, 'Pass 2 (retry)', 2, 500);
+
+    // Pass 3: final retry for remaining misses
+    const missed2 = subaccounts.filter(s => !result.has(s));
+    if (missed2.length > 0 && missed2.length < missed1.length * 0.95) {
+      console.log(`  Waiting 10s before final retry (${missed2.length} still missed)...`);
+      await new Promise(r => setTimeout(r, 10000));
+      await runPass(missed2, 'Pass 3 (final)', 1, 800);
+    } else if (missed2.length > 0) {
+      console.log(`  Pass 2 didn't improve much (${missed2.length} still missed), skipping pass 3`);
     }
+  } else if (missed1.length > 0) {
+    console.log(`  Too many misses for retry (${missed1.length}/${subaccounts.length}), likely genuinely empty subaccounts`);
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-  console.log(`Fetched snapshots for ${result.size}/${subaccounts.length} subaccounts in ${elapsed}s (${failedBatches} failed batches)`);
+  const finalMissed = subaccounts.filter(s => !result.has(s)).length;
+  console.log(`Fetched snapshots for ${result.size}/${subaccounts.length} subaccounts in ${elapsed}s (${finalMissed} not found)`);
   return result;
 }
 
