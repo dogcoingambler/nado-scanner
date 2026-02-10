@@ -675,8 +675,8 @@ function extractCumulativeVolumes(
 }
 
 // Compute period volume = cumulative_now - cumulative_past
-// ONLY includes subaccounts present in BOTH snapshots to avoid
-// treating missing past data as "all volume is in this period"
+// For subaccounts missing from past snapshot (created during the period),
+// treat their start volume as 0 so their entire cumulative volume counts.
 function computePeriodVolume(
   nowVolumes: Map<string, Map<number, number>>,
   pastVolumes: Map<string, Map<number, number>> | null
@@ -686,12 +686,11 @@ function computePeriodVolume(
 
   for (const [subaccount, nowProducts] of nowVolumes) {
     const pastProducts = pastVolumes.get(subaccount);
-    // Skip subaccounts missing from past snapshot — we can't compute their period volume
-    if (!pastProducts) continue;
+    // If subaccount has no past data, it was created during this period — start from 0
 
     const periodProducts = new Map<number, number>();
     for (const [productId, nowVol] of nowProducts) {
-      const pastVol = pastProducts.get(productId) || 0;
+      const pastVol = pastProducts?.get(productId) || 0;
       const diff = nowVol - pastVol;
       if (diff > 0) {
         periodProducts.set(productId, diff);
