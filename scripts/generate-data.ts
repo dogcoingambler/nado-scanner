@@ -45,12 +45,10 @@ function saveEpochCache(epochs: EpochLeaderboard[]): void {
   console.log(`Saved epoch cache: ${epochs.length} epochs`);
 }
 
-async function fetchSubaccountsWithRetry(): Promise<{ id: string; subaccount: string }[]> {
+async function fetchSubaccountsWithRetry() {
   for (let attempt = 0; attempt < 3; attempt++) {
     const subaccounts = await fetchAllSubaccounts(40000);
-    if (subaccounts.length > 0) {
-      return subaccounts.map(s => ({ id: s.address, subaccount: s.subaccount }));
-    }
+    if (subaccounts.length > 0) return subaccounts;
     console.log(`Subaccount fetch returned 0 (attempt ${attempt + 1}/3), retrying in 15s...`);
     await new Promise(r => setTimeout(r, 15000));
   }
@@ -81,6 +79,7 @@ async function main() {
 
     // Check if we need subaccounts (for uncached past epochs or current epoch)
     const needsSubaccounts = uncachedPastEpochs.length > 0 || currentEpoch != null;
+    let allSubaccounts: Awaited<ReturnType<typeof fetchSubaccountsWithRetry>> = [];
     let subaccountIds: string[] = [];
 
     if (needsSubaccounts) {
@@ -88,8 +87,8 @@ async function main() {
       console.log('Waiting 10s before epoch computation to avoid rate limiting...');
       await new Promise(r => setTimeout(r, 10000));
 
-      const subs = await fetchSubaccountsWithRetry();
-      subaccountIds = subs.map(s => s.subaccount);
+      allSubaccounts = await fetchSubaccountsWithRetry();
+      subaccountIds = allSubaccounts.map(s => s.subaccount);
       if (subaccountIds.length === 0) {
         console.warn('Could not fetch subaccounts for epoch leaderboards.');
       }
@@ -102,7 +101,7 @@ async function main() {
       console.log(`Computing ${uncachedPastEpochs.length} past epoch(s): ${uncachedPastEpochs.map(e => e.name).join(', ')}`);
       for (const epoch of uncachedPastEpochs) {
         try {
-          const leaderboard = await fetchEpochLeaderboard(epoch, subaccountIds);
+          const leaderboard = await fetchEpochLeaderboard(epoch, subaccountIds, allSubaccounts);
           epochCache.push(leaderboard);
           // Save after each epoch so progress isn't lost
           saveEpochCache(epochCache);
@@ -129,7 +128,7 @@ async function main() {
           ...currentEpoch,
           end: new Date().toISOString(),
         };
-        const leaderboard = await fetchEpochLeaderboard(currentEpochWithNow, subaccountIds);
+        const leaderboard = await fetchEpochLeaderboard(currentEpochWithNow, subaccountIds, allSubaccounts);
         // Store with original epoch boundaries for display
         leaderboard.epochName = currentEpoch.name;
         leaderboard.epochStart = currentEpoch.start;

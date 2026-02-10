@@ -54,10 +54,10 @@ async function main() {
   // Step 2: Test a small raw batch first to inspect the data format
   console.log('--- Raw data inspection (first 5 subaccounts) ---');
   const testBatch = subaccountIds.slice(0, 5);
-  const endTs = Math.floor(new Date(epoch.end).getTime() / 1000);
+  const endTsRaw = Math.floor(new Date(epoch.end).getTime() / 1000);
 
   try {
-    const rawData = await fetchRawSnapshot(testBatch, endTs);
+    const rawData = await fetchRawSnapshot(testBatch, endTsRaw);
     const snapshots = rawData.snapshots || {};
 
     for (const [subaccount, tsData] of Object.entries(snapshots)) {
@@ -82,8 +82,16 @@ async function main() {
   console.log('\n\n--- Computing Private Alpha leaderboard ---');
   console.log('This will take several minutes...\n');
 
+  // Filter subaccounts created before epoch end (reduces API calls significantly)
+  const endTs = Math.floor(new Date(epoch.end).getTime() / 1000);
+  const relevantSubs = subaccounts.filter(s => {
+    const createdTs = parseInt(s.created_at, 10);
+    return !isNaN(createdTs) && createdTs <= endTs;
+  });
+  console.log(`Filtered: ${relevantSubs.length}/${subaccounts.length} subaccounts created before epoch end\n`);
+
   const startTime = Date.now();
-  const leaderboard = await fetchEpochLeaderboard(epoch, subaccountIds);
+  const leaderboard = await fetchEpochLeaderboard(epoch, relevantSubs.map(s => s.subaccount), relevantSubs);
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
   console.log(`\n=== Private Alpha Results (${elapsed}s) ===`);

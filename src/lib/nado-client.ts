@@ -495,10 +495,7 @@ async function fetchAccountSnapshots(
   timestamp: number
 ): Promise<Map<string, AccountSnapshotProduct[]>> {
   const result = new Map<string, AccountSnapshotProduct[]>();
-
   const batchSize = 40;
-  const concurrency = 4;
-  const delayMs = 300;
 
   async function runPass(
     ids: string[],
@@ -511,7 +508,7 @@ async function fetchAccountSnapshots(
       batches.push(ids.slice(i, i + batchSize));
     }
 
-    console.log(`${passLabel}: ${batches.length} batches of ${batchSize}, ${passConcurrency} concurrent, ${passDelay}ms delay`);
+    console.log(`  ${passLabel}: ${batches.length} batches of ${batchSize}, ${passConcurrency} concurrent, ${passDelay}ms delay`);
     let failedBatches = 0;
 
     for (let i = 0; i < batches.length; i += passConcurrency) {
@@ -533,8 +530,8 @@ async function fetchAccountSnapshots(
       }
 
       const processed = Math.min(i + passConcurrency, batches.length);
-      if (processed % 50 === 0 || processed === batches.length) {
-        console.log(`  ${passLabel}: ${processed}/${batches.length} batches (${result.size} total subaccounts, ${failedBatches} failed)`);
+      if (processed % 100 === 0 || processed === batches.length) {
+        console.log(`    ${processed}/${batches.length} batches (${result.size} total, ${failedBatches} failed)`);
       }
     }
     return failedBatches;
@@ -542,27 +539,23 @@ async function fetchAccountSnapshots(
 
   const startTime = Date.now();
 
-  // Pass 1: main fetch
-  const failed1 = await runPass(subaccounts, 'Pass 1', concurrency, delayMs);
+  // Pass 1: main fetch (concurrency 2, 500ms delay to avoid rate limiting)
+  await runPass(subaccounts, 'Pass 1', 2, 500);
 
-  // Pass 2: retry missed subaccounts with lower concurrency
+  // Pass 2: retry missed subaccounts (slower, after cooldown)
   const missed1 = subaccounts.filter(s => !result.has(s));
   if (missed1.length > 0 && missed1.length < subaccounts.length * 0.95) {
-    console.log(`  Waiting 5s before retry pass (${missed1.length} missed subaccounts)...`);
+    console.log(`  Waiting 5s before retry (${missed1.length} missed)...`);
     await new Promise(r => setTimeout(r, 5000));
-    const failed2 = await runPass(missed1, 'Pass 2 (retry)', 2, 500);
+    await runPass(missed1, 'Pass 2 (retry)', 1, 600);
 
-    // Pass 3: final retry for remaining misses
+    // Pass 3: final retry for remaining
     const missed2 = subaccounts.filter(s => !result.has(s));
-    if (missed2.length > 0 && missed2.length < missed1.length * 0.95) {
+    if (missed2.length > 0 && missed2.length < missed1.length * 0.9) {
       console.log(`  Waiting 10s before final retry (${missed2.length} still missed)...`);
       await new Promise(r => setTimeout(r, 10000));
-      await runPass(missed2, 'Pass 3 (final)', 1, 800);
-    } else if (missed2.length > 0) {
-      console.log(`  Pass 2 didn't improve much (${missed2.length} still missed), skipping pass 3`);
+      await runPass(missed2, 'Pass 3 (final)', 1, 1000);
     }
-  } else if (missed1.length > 0) {
-    console.log(`  Too many misses for retry (${missed1.length}/${subaccounts.length}), likely genuinely empty subaccounts`);
   }
 
   const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -977,16 +970,26 @@ async function fetchOpenInterest(): Promise<{ items: OpenInterestData[]; total: 
 export async function fetchEpochLeaderboard(
   epoch: Epoch,
   subaccountIds: string[],
+  subaccountInfos?: SubaccountInfo[],
 ): Promise<EpochLeaderboard> {
   console.log(`\nComputing leaderboard for epoch: ${epoch.name} (${epoch.start} → ${epoch.end})`);
   const startTs = Math.floor(new Date(epoch.start).getTime() / 1000);
   const endTs = Math.floor(new Date(epoch.end).getTime() / 1000);
 
-  // Fetch start and end snapshots separately with batch size 40 each
-  // This is more reliable than multi-timestamp (batch size 20) since each
-  // API call is simpler and less likely to fail or hit response size limits
-  console.log(`  Fetching end-of-epoch snapshots (${subaccountIds.length} subaccounts)...`);
-  const snapshotsEnd = await fetchAccountSnapshots(subaccountIds, endTs);
+  // Filter subaccounts to only those created before epoch end (huge reduction for older epochs)
+  let filteredIds = subaccountIds;
+  if (subaccountInfos) {
+    filteredIds = subaccountInfos
+      .filter(s => {
+        const createdTs = parseInt(s.created_at, 10);
+        return !isNaN(createdTs) && createdTs <= endTs;
+      })
+      .map(s => s.subaccount);
+    console.log(`  Filtered to ${filteredIds.length}/${subaccountIds.length} subaccounts (created before epoch end)`);
+  }
+
+  console.log(`  Fetching end-of-epoch snapshots (${filteredIds.length} subaccounts)...`);
+  const snapshotsEnd = await fetchAccountSnapshots(filteredIds, endTs);
 
   // Only fetch start snapshots for subaccounts that have end data
   const activeIds = Array.from(snapshotsEnd.keys());
