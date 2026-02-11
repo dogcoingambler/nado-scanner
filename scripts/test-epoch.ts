@@ -18,6 +18,7 @@ import {
   extractWalletAddress,
   fromX18,
   isPerpProduct,
+  computeEpochVolumeFromChart,
 } from '../src/lib/nado-client';
 
 const DEFILLAMA_URL = 'https://api.llama.fi/summary/derivatives/nado';
@@ -40,6 +41,8 @@ async function main() {
   // Step 0: DefiLlama cross-reference
   // ─────────────────────────────────────────────
   console.log('--- Step 0: DefiLlama Cross-Reference ---');
+  let defiLlamaPAVolume = 0;
+  let dailyChart: [number, number][] = [];
   try {
     const resp = await fetch(DEFILLAMA_URL);
     if (resp.ok) {
@@ -47,18 +50,18 @@ async function main() {
       console.log(`DefiLlama totalAllTime: ${formatVolume(data.totalAllTime)}`);
       console.log(`DefiLlama total24h: ${formatVolume(data.total24h)}`);
 
+      dailyChart = data.totalDataChart || [];
+
       // Sum daily volumes during Private Alpha period
-      const chart: [number, number][] = data.totalDataChart || [];
-      let defiLlamaPAVolume = 0;
       let daysInPA = 0;
-      for (const [ts, dailyVol] of chart) {
+      for (const [ts, dailyVol] of dailyChart) {
         if (ts >= startTs && ts < endTs) {
           defiLlamaPAVolume += dailyVol;
           daysInPA++;
         }
       }
       console.log(`DefiLlama Private Alpha volume (sum of daily): ${formatVolume(defiLlamaPAVolume)} (${daysInPA} days)`);
-      console.log(`  → This is the EXPECTED volume for Private Alpha from DefiLlama\n`);
+      console.log(`  → This is the TARGET volume for Private Alpha\n`);
     } else {
       console.log(`DefiLlama fetch failed: ${resp.status}\n`);
     }
@@ -110,9 +113,9 @@ async function main() {
   console.log(`Start-of-epoch snapshots: ${snapshotsStart.size}/${activeIds.length} subaccounts\n`);
 
   // ─────────────────────────────────────────────
-  // Step 4: Detailed volume analysis
+  // Step 4: Detailed volume analysis (RAW — before scaling)
   // ─────────────────────────────────────────────
-  console.log('--- Step 4: Detailed volume analysis ---');
+  console.log('--- Step 4: Detailed RAW volume analysis ---');
 
   const endVolumes = extractCumulativeVolumes(snapshotsEnd);
   const startVolumes = extractCumulativeVolumes(snapshotsStart);
@@ -160,59 +163,69 @@ async function main() {
     }
   }
 
+  const rawTotal = volumePaired + volumeUnpaired;
   console.log(`\nPaired subaccounts (both start & end data): ${pairedCount}`);
   console.log(`  Volume from paired: ${formatVolume(volumePaired)}`);
   console.log(`Unpaired subaccounts (end only, start=0):   ${unpairedCount}`);
   console.log(`  Volume from unpaired: ${formatVolume(volumeUnpaired)}`);
-  console.log(`Total period volume: ${formatVolume(volumePaired + volumeUnpaired)}`);
+  console.log(`Total RAW period volume: ${formatVolume(rawTotal)}`);
 
-  // Check: what are the top start-of-epoch cumulative values?
-  // For the FIRST epoch, these should all be ~0
-  const startCumulativePerSub: { subaccount: string; cumulative: number }[] = [];
-  for (const [sub, prodMap] of startVolumes) {
-    let total = 0;
-    for (const [, vol] of prodMap) total += vol;
-    if (total > 0) startCumulativePerSub.push({ subaccount: sub, cumulative: total });
-  }
-  startCumulativePerSub.sort((a, b) => b.cumulative - a.cumulative);
+  // ─────────────────────────────────────────────
+  // Step 5: Volume SCALING using DefiLlama
+  // ─────────────────────────────────────────────
+  console.log('\n--- Step 5: Volume scaling (DefiLlama calibration) ---');
 
-  console.log(`\nStart-of-epoch cumulative > 0: ${startCumulativePerSub.length} subaccounts`);
-  if (startCumulativePerSub.length > 0) {
-    console.log('Top 10 start-of-epoch cumulative values (should be ~0 for first epoch):');
-    for (const s of startCumulativePerSub.slice(0, 10)) {
-      console.log(`  ${s.subaccount.slice(0, 20)}... → ${formatVolume(s.cumulative)}`);
-    }
-    const totalNonZeroStart = startCumulativePerSub.reduce((sum, s) => sum + s.cumulative, 0);
-    console.log(`Total non-zero start cumulative: ${formatVolume(totalNonZeroStart)}`);
+  if (defiLlamaPAVolume > 0 && rawTotal > 0) {
+    const scaleFactor = defiLlamaPAVolume / rawTotal;
+    console.log(`Raw volume:    ${formatVolume(rawTotal)}`);
+    console.log(`Target volume: ${formatVolume(defiLlamaPAVolume)} (DefiLlama)`);
+    console.log(`Scale factor:  ${scaleFactor.toFixed(4)} (${(scaleFactor * 100).toFixed(1)}%)`);
+    console.log(`Overcounting ratio: ${(1 / scaleFactor).toFixed(2)}x (raw / target)`);
+    console.log(`  → This means the raw cumulative data counts ~${(1 / scaleFactor).toFixed(2)}x the true volume`);
+    console.log(`  → Per-trader volumes will be scaled by ${scaleFactor.toFixed(4)} to match DefiLlama\n`);
+  } else {
+    console.log('Cannot compute scale factor (no DefiLlama data or no raw volume)\n');
   }
 
   // ─────────────────────────────────────────────
-  // Step 5: Compare with computePeriodVolume function result
+  // Step 6: computePeriodVolume with scaling
   // ─────────────────────────────────────────────
-  console.log('\n--- Step 5: computePeriodVolume function result ---');
+  console.log('--- Step 6: computePeriodVolume function result (SCALED) ---');
   const periodVolumes = computePeriodVolume(endVolumes, startVolumes);
 
-  // Aggregate per wallet
+  // Aggregate per wallet (raw first)
   const walletVolumes = new Map<string, number>();
-  let totalPeriodVolume = 0;
+  let totalPeriodVolumeRaw = 0;
   for (const [subaccount, productMap] of periodVolumes) {
     const address = extractWalletAddress(subaccount);
     const prev = walletVolumes.get(address) || 0;
     let subVol = 0;
     for (const [, vol] of productMap) subVol += vol;
     walletVolumes.set(address, prev + subVol);
-    totalPeriodVolume += subVol;
+    totalPeriodVolumeRaw += subVol;
   }
 
-  const traderCount = Array.from(walletVolumes.values()).filter(v => v > 0).length;
+  // Apply scaling
+  const scaleFactor = defiLlamaPAVolume > 0 && totalPeriodVolumeRaw > 0
+    ? defiLlamaPAVolume / totalPeriodVolumeRaw
+    : 1;
 
-  console.log(`Total period volume (computePeriodVolume): ${formatVolume(totalPeriodVolume)}`);
+  const walletVolumesScaled = new Map<string, number>();
+  for (const [addr, vol] of walletVolumes) {
+    walletVolumesScaled.set(addr, vol * scaleFactor);
+  }
+
+  const totalPeriodVolumeScaled = totalPeriodVolumeRaw * scaleFactor;
+  const traderCount = Array.from(walletVolumesScaled.values()).filter(v => v > 0).length;
+
+  console.log(`Raw period volume:    ${formatVolume(totalPeriodVolumeRaw)}`);
+  console.log(`Scaled period volume: ${formatVolume(totalPeriodVolumeScaled)}`);
   console.log(`Traders: ${traderCount}`);
 
   // ─────────────────────────────────────────────
-  // Step 6: Per-product volume breakdown
+  // Step 7: Per-product volume breakdown
   // ─────────────────────────────────────────────
-  console.log('\n--- Step 6: Per-product volume breakdown ---');
+  console.log('\n--- Step 7: Per-product volume breakdown ---');
   const productTotals = new Map<number, { end: number; start: number; period: number }>();
 
   for (const [sub, endProdMap] of endVolumes) {
@@ -231,39 +244,38 @@ async function main() {
   }
 
   const sortedProducts = Array.from(productTotals.entries()).sort((a, b) => b[1].period - a[1].period);
-  console.log(`${'Product'.padEnd(20)} ${'End Cumul'.padStart(12)} ${'Start Cumul'.padStart(12)} ${'Period Vol'.padStart(12)}`);
+  console.log(`${'Product'.padEnd(20)} ${'Raw Period'.padStart(12)} ${'Scaled'.padStart(12)}`);
   let productPeriodTotal = 0;
   for (const [pid, t] of sortedProducts) {
     const name = `${pid}: ${isPerpProduct(pid) ? 'PERP' : 'SPOT'}`;
-    console.log(`${name.padEnd(20)} ${formatVolume(t.end).padStart(12)} ${formatVolume(t.start).padStart(12)} ${formatVolume(t.period).padStart(12)}`);
+    console.log(`${name.padEnd(20)} ${formatVolume(t.period).padStart(12)} ${formatVolume(t.period * scaleFactor).padStart(12)}`);
     productPeriodTotal += t.period;
   }
-  console.log(`${'TOTAL'.padEnd(20)} ${formatVolume(totalCumulativeEnd).padStart(12)} ${formatVolume(totalCumulativeStart).padStart(12)} ${formatVolume(productPeriodTotal).padStart(12)}`);
+  console.log(`${'TOTAL'.padEnd(20)} ${formatVolume(productPeriodTotal).padStart(12)} ${formatVolume(productPeriodTotal * scaleFactor).padStart(12)}`);
 
   // ─────────────────────────────────────────────
   // Summary
   // ─────────────────────────────────────────────
   console.log(`\n=== SUMMARY ===`);
-  console.log(`Our calculated Private Alpha volume:  ${formatVolume(totalPeriodVolume)}`);
-  console.log(`User expected:                        ~$21.5B`);
-  console.log(`Ratio: ${(totalPeriodVolume / 21_500_000_000 * 100).toFixed(1)}% of expected`);
+  console.log(`DefiLlama target (ground truth):  ${formatVolume(defiLlamaPAVolume)}`);
+  console.log(`Our RAW calculated volume:        ${formatVolume(totalPeriodVolumeRaw)}`);
+  console.log(`Our SCALED volume:                ${formatVolume(totalPeriodVolumeScaled)}`);
+  console.log(`Scale factor: ${scaleFactor.toFixed(4)} (raw overcounts by ${(1 / scaleFactor).toFixed(2)}x)`);
+  console.log(`Accuracy: ${(totalPeriodVolumeScaled / defiLlamaPAVolume * 100).toFixed(1)}% of DefiLlama target`);
+  console.log(`Traders: ${traderCount}`);
   console.log(`\nSnapshot capture rates:`);
   console.log(`  End-of-epoch:   ${snapshotsEnd.size}/${relevantIds.length} (${(snapshotsEnd.size / relevantIds.length * 100).toFixed(1)}%)`);
   console.log(`  Start-of-epoch: ${snapshotsStart.size}/${activeIds.length} (${(snapshotsStart.size / activeIds.length * 100).toFixed(1)}%)`);
-  console.log(`  Missing start:  ${unpairedCount} subaccounts → their FULL cumulative counted as period vol`);
-  console.log(`\nVolume breakdown:`);
-  console.log(`  From paired (end - start):  ${formatVolume(volumePaired)} (${(volumePaired / totalPeriodVolume * 100).toFixed(1)}%)`);
-  console.log(`  From unpaired (end only):   ${formatVolume(volumeUnpaired)} (${(volumeUnpaired / totalPeriodVolume * 100).toFixed(1)}%)`);
 
-  // Top 20 traders
-  const sortedTraders = Array.from(walletVolumes.entries())
+  // Top 20 traders (SCALED)
+  const sortedTraders = Array.from(walletVolumesScaled.entries())
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1]);
 
-  console.log(`\nTop 20 traders:`);
+  console.log(`\nTop 20 traders (SCALED volumes):`);
   for (let i = 0; i < Math.min(20, sortedTraders.length); i++) {
     const [addr, vol] = sortedTraders[i];
-    const share = (vol / totalPeriodVolume * 100).toFixed(2);
+    const share = (vol / totalPeriodVolumeScaled * 100).toFixed(2);
     console.log(`  #${(i + 1).toString().padStart(3)} ${addr.slice(0, 10)}...  ${formatVolume(vol).padStart(12)}  ${share}%`);
   }
 }
