@@ -10,19 +10,12 @@
  *
  * Past epoch leaderboards are cached in public/data/epoch-cache.json
  * so they don't need to be re-fetched on subsequent runs.
- *
- * Volume accuracy: We use DefiLlama daily chart data as the source of
- * truth for epoch total volumes, and scale per-account volumes
- * proportionally. This corrects for the double-counting inherent in
- * summing both sides of each trade from account snapshots.
  */
 
 import {
   fetchDashboardData,
   fetchEpochLeaderboard,
   fetchAllSubaccounts,
-  fetchDerivativesStats,
-  computeEpochVolumeFromChart,
   EPOCHS,
   getCurrentEpoch,
 } from '../src/lib/nado-client';
@@ -71,16 +64,6 @@ async function main() {
     // Step 1: Fetch main dashboard data (includes user growth, OI, volume, all-time leaderboard)
     const data = await fetchDashboardData('all');
 
-    // Step 1b: Fetch DefiLlama daily chart for epoch volume calibration
-    console.log('\n=== Fetching DefiLlama chart for volume calibration ===');
-    const defiLlamaStats = await fetchDerivativesStats();
-    const dailyChart: [number, number][] = defiLlamaStats?.totalDataChart || [];
-    if (dailyChart.length > 0) {
-      console.log(`DefiLlama daily chart: ${dailyChart.length} data points`);
-    } else {
-      console.warn('Warning: No DefiLlama daily chart data — epoch volumes will NOT be calibrated');
-    }
-
     // Step 2: Compute epoch leaderboards
     console.log('\n=== Computing epoch leaderboards ===');
     const currentEpoch = getCurrentEpoch();
@@ -118,11 +101,7 @@ async function main() {
       console.log(`Computing ${uncachedPastEpochs.length} past epoch(s): ${uncachedPastEpochs.map(e => e.name).join(', ')}`);
       for (const epoch of uncachedPastEpochs) {
         try {
-          // Compute target volume from DefiLlama chart
-          const targetVolume = dailyChart.length > 0
-            ? computeEpochVolumeFromChart(dailyChart, epoch.start, epoch.end)
-            : undefined;
-          const leaderboard = await fetchEpochLeaderboard(epoch, subaccountIds, allSubaccounts, targetVolume || undefined);
+          const leaderboard = await fetchEpochLeaderboard(epoch, subaccountIds, allSubaccounts);
           epochCache.push(leaderboard);
           // Save after each epoch so progress isn't lost
           saveEpochCache(epochCache);
@@ -149,11 +128,7 @@ async function main() {
           ...currentEpoch,
           end: new Date().toISOString(),
         };
-        // Compute target volume from DefiLlama chart (up to now)
-        const targetVolume = dailyChart.length > 0
-          ? computeEpochVolumeFromChart(dailyChart, currentEpoch.start, currentEpochWithNow.end)
-          : undefined;
-        const leaderboard = await fetchEpochLeaderboard(currentEpochWithNow, subaccountIds, allSubaccounts, targetVolume || undefined);
+        const leaderboard = await fetchEpochLeaderboard(currentEpochWithNow, subaccountIds, allSubaccounts);
         // Store with original epoch boundaries for display
         leaderboard.epochName = currentEpoch.name;
         leaderboard.epochStart = currentEpoch.start;

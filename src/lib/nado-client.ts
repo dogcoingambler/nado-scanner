@@ -967,37 +967,10 @@ async function fetchOpenInterest(): Promise<{ items: OpenInterestData[]; total: 
 // EPOCH LEADERBOARDS — compute leaderboard for a single epoch
 // ============================================================
 
-/**
- * Compute the "true" epoch volume from DefiLlama daily chart data.
- * Sums all daily volume entries whose timestamps fall within [epochStart, epochEnd).
- * Returns 0 if no matching entries found.
- */
-export function computeEpochVolumeFromChart(
-  chart: [number, number][],
-  epochStartIso: string,
-  epochEndIso: string,
-): number {
-  const startTs = Math.floor(new Date(epochStartIso).getTime() / 1000);
-  const endTs = Math.floor(new Date(epochEndIso).getTime() / 1000);
-  let total = 0;
-  let days = 0;
-  for (const [ts, dailyVol] of chart) {
-    if (ts >= startTs && ts < endTs) {
-      total += dailyVol;
-      days++;
-    }
-  }
-  if (days > 0) {
-    console.log(`  DefiLlama epoch volume: $${formatVolume(total)} (${days} days)`);
-  }
-  return total;
-}
-
 export async function fetchEpochLeaderboard(
   epoch: Epoch,
   subaccountIds: string[],
   subaccountInfos?: SubaccountInfo[],
-  targetTotalVolume?: number,
 ): Promise<EpochLeaderboard> {
   console.log(`\nComputing leaderboard for epoch: ${epoch.name} (${epoch.start} → ${epoch.end})`);
   const startTs = Math.floor(new Date(epoch.start).getTime() / 1000);
@@ -1031,7 +1004,7 @@ export async function fetchEpochLeaderboard(
 
   // Aggregate per wallet
   const walletVolumes = new Map<string, { volume: number; products: Set<number> }>();
-  let rawTotalVolume = 0;
+  let totalVolume = 0;
 
   for (const [subaccount, productMap] of periodVolumes) {
     const address = extractWalletAddress(subaccount);
@@ -1042,23 +1015,9 @@ export async function fetchEpochLeaderboard(
     for (const [productId, vol] of productMap) {
       wallet.volume += vol;
       wallet.products.add(productId);
-      rawTotalVolume += vol;
+      totalVolume += vol;
     }
   }
-
-  // Apply scaling if a target total volume is provided (from DefiLlama)
-  // The raw cumulative volume double-counts both sides of each trade,
-  // so we scale trader volumes proportionally to match the true exchange volume.
-  let scaleFactor = 1;
-  if (targetTotalVolume && targetTotalVolume > 0 && rawTotalVolume > 0) {
-    scaleFactor = targetTotalVolume / rawTotalVolume;
-    console.log(`  Volume scaling: raw=$${formatVolume(rawTotalVolume)} → target=$${formatVolume(targetTotalVolume)} (factor=${scaleFactor.toFixed(4)})`);
-    for (const [, wallet] of walletVolumes) {
-      wallet.volume *= scaleFactor;
-    }
-  }
-
-  const totalVolume = targetTotalVolume && targetTotalVolume > 0 ? targetTotalVolume : rawTotalVolume;
 
   const traders: EpochTraderData[] = Array.from(walletVolumes.entries())
     .filter(([, w]) => w.volume > 0)
@@ -1072,7 +1031,7 @@ export async function fetchEpochLeaderboard(
     .sort((a, b) => b.volume - a.volume)
     .map((t, i) => ({ ...t, rank: i + 1 }));
 
-  console.log(`  Epoch ${epoch.name}: ${traders.length} traders, $${formatVolume(totalVolume)}${scaleFactor !== 1 ? ` (scaled from $${formatVolume(rawTotalVolume)})` : ''}`);
+  console.log(`  Epoch ${epoch.name}: ${traders.length} traders, $${formatVolume(totalVolume)}`);
 
   return {
     epochName: epoch.name,
